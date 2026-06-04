@@ -1,0 +1,41 @@
+{
+  "backend": "zhipu",
+  "model": "glm-5.1",
+  "timezone": "Asia/Shanghai",
+  "freshness_window": "previous_day_to_run",
+  "lookback_hours": 24,
+  "language": "zh-CN",
+  "output_format": "html",
+  "max_items": 12,
+  "context_path": "config/research-context.md",
+  "sources_path": "config/sources.json",
+  "feedback_path": "memory/feedback.md",
+  "output_dir": "briefs",
+  "runs_dir": "runs",
+  "collectors": {
+    "user_agent": "dailyresearch/0.1 research@example.com",
+    "timeout_seconds": 30,
+    "max_evidence_items": 200
+  },
+  "obsidian": {
+    "vault_path": "",
+    "note_dir": "Daily Research"
+  },
+  "openai": {
+    "api_base": "https://api.openai.com/v1",
+    "model": "gpt-5.4",
+    "reasoning_effort": "medium"
+  },
+  "zhipu": {
+    "api_base": "https://open.bigmodel.cn/api/paas/v4",
+    "model": "glm-5.1",
+    "temperature": 0.2,
+    "max_tokens": 32768,
+    "thinking": "enabled"
+  },
+  "codex": {
+    "model": "",
+    "sandbox": "workspace-write",
+    "extra_writable_dirs": []
+  }
+}
