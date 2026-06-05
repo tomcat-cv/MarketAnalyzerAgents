@@ -1,10 +1,95 @@
 {
-  "priority_topics": [
-    "A-share broad market, market breadth, technology, semiconductors, semiconductor equipment/materials, AI compute infrastructure, and industrial policy",
-    "US broad market, AI infrastructure, semiconductors, data-center power, and energy",
-    "US macro drivers: Fed policy, Treasury yields, CPI/PCE/jobs data, USD, oil, copper, gold, silver, and volatility",
-    "Precious metals and non-ferrous metals: silver, gold, related A-share ETFs/funds, miners, smelters, and supply-demand shocks",
-    "Cross-market links between US AI capex, semiconductor supply chains, energy demand, China technology policy, and metals/fund flows"
+  "focus_topics": [
+    {
+      "id": "semiconductors",
+      "name": "半导体",
+      "segments": [
+        {
+          "name": "A股半导体",
+          "topics": [
+            "主题:半导体:A股"
+          ]
+        },
+        {
+          "name": "美股半导体",
+          "topics": [
+            "主题:半导体:美股"
+          ]
+        }
+      ],
+      "instruments": [
+        {
+          "symbol": "512480.SS",
+          "name": "A股半导体ETF代理",
+          "topics": [
+            "主题:半导体:A股"
+          ]
+        },
+        {
+          "symbol": "^SOX",
+          "name": "PHLX Semiconductor Index",
+          "topics": [
+            "主题:半导体:美股"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gold",
+      "name": "黄金",
+      "segments": [
+        {
+          "name": "黄金",
+          "topics": [
+            "主题:黄金"
+          ]
+        }
+      ],
+      "instruments": [
+        {
+          "symbol": "GC=F",
+          "name": "COMEX Gold Futures",
+          "topics": [
+            "主题:黄金"
+          ]
+        },
+        {
+          "symbol": "GLD",
+          "name": "SPDR Gold Shares",
+          "topics": [
+            "主题:黄金"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "silver",
+      "name": "白银",
+      "segments": [
+        {
+          "name": "白银",
+          "topics": [
+            "主题:白银"
+          ]
+        }
+      ],
+      "instruments": [
+        {
+          "symbol": "SI=F",
+          "name": "COMEX Silver Futures",
+          "topics": [
+            "主题:白银"
+          ]
+        },
+        {
+          "symbol": "SLV",
+          "name": "iShares Silver Trust",
+          "topics": [
+            "主题:白银"
+          ]
+        }
+      ]
+    }
   ],
   "portfolios": {
     "a_share": {
@@ -73,26 +158,14 @@
         "创业板指",
         "科创50"
       ],
-      "key_themes": [
-        "半导体",
-        "半导体设备与材料",
-        "先进封装",
-        "AI算力与服务器",
-        "光模块与网络",
-        "电力设备与电网",
-        "黄金白银与有色金属"
-      ]
+      "key_themes": []
     },
     "us_equities": {
       "broad_market": [
         "S&P 500",
         "Nasdaq Composite"
       ],
-      "key_themes": [
-        "semiconductors",
-        "AI infrastructure",
-        "data-center power"
-      ]
+      "key_themes": []
     }
   },
   "collectors": {
@@ -134,14 +207,6 @@
           ]
         },
         {
-          "symbol": "512480.SS",
-          "name": "A股半导体ETF代理",
-          "topics": [
-            "A股",
-            "A股重点方向：半导体"
-          ]
-        },
-        {
           "symbol": "^GSPC",
           "name": "S&P 500",
           "topics": [
@@ -154,13 +219,6 @@
           "topics": [
             "美股整体市场",
             "美股科技方向"
-          ]
-        },
-        {
-          "symbol": "^SOX",
-          "name": "PHLX Semiconductor Index",
-          "topics": [
-            "美股半导体方向"
           ]
         }
       ]
@@ -377,21 +435,8 @@
     ],
     "cninfo": {
       "enabled": true,
-      "market_queries": [
-        "业绩预告",
-        "并购重组"
-      ],
-      "theme_queries": [
-        "半导体",
-        "半导体设备",
-        "半导体材料",
-        "先进封装",
-        "算力",
-        "光模块",
-        "黄金",
-        "白银",
-        "有色"
-      ],
+      "market_queries": [],
+      "theme_queries": [],
       "page_size": 30,
       "max_pages": 2
     },

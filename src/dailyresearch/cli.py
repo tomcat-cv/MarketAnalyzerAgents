@@ -19,7 +19,9 @@ from .env import load_dotenv
 from .evidence import (
     EvidencePack,
     configured_a_share_holdings,
+    configured_focus_topics,
     configured_holdings,
+    configured_portfolio_holdings,
     evidence_only_brief_markdown,
     evidence_pack_markdown,
     filter_evidence_pack,
@@ -80,6 +82,7 @@ def write_model_brief(
     output_format: str,
     run_date: date,
     holdings: Sequence[dict[str, Any]],
+    focus_topics: Sequence[dict[str, Any]],
 ) -> int:
     write_text(prompt_path, f"# System\n\n{system}\n\n# User\n\n{user}\n")
     write_json(runs_dir / f"{stamp}-request.json", payload)
@@ -100,6 +103,7 @@ def write_model_brief(
         model_brief.analyses,
         run_date,
         holdings=holdings,
+        focus_topics=focus_topics,
         portfolio_actions=model_brief.portfolio_actions,
     )
     write_text(runs_dir / f"{stamp}-brief-source.md", brief_text)
@@ -131,7 +135,8 @@ def command_run(args: argparse.Namespace) -> int:
     output_format = resolve_output_format(args, settings)
     run_date = parse_date(args.date, str(settings.get("timezone", "Asia/Shanghai")))
     inputs = read_inputs(root, settings)
-    holdings = configured_holdings(inputs.get("sources", {}))
+    holdings = configured_portfolio_holdings(inputs.get("sources", {}))
+    focus_topics = configured_focus_topics(inputs.get("sources", {}))
     output_path = output_path_for(root, settings, run_date, args.output, output_format)
     runs_dir = runs_dir_for(root, settings)
     ensure_dirs([runs_dir, output_path.parent])
@@ -227,6 +232,7 @@ def command_run(args: argparse.Namespace) -> int:
             output_format=output_format,
             run_date=run_date,
             holdings=holdings,
+            focus_topics=focus_topics,
         )
 
     if backend == "zhipu":
@@ -255,6 +261,7 @@ def command_run(args: argparse.Namespace) -> int:
             output_format=output_format,
             run_date=run_date,
             holdings=holdings,
+            focus_topics=focus_topics,
         )
 
     if backend == "codex":
@@ -351,12 +358,14 @@ def command_doctor(_: argparse.Namespace) -> int:
         window_end = window_end.astimezone(local_tz)
     holdings = configured_holdings(inputs.get("sources", {}))
     a_share_holdings = configured_a_share_holdings(inputs.get("sources", {}))
+    focus_topics = configured_focus_topics(inputs.get("sources", {}))
     print(f"Freshness window: {window_mode} ({window_start.isoformat()} to {window_end.isoformat()})")
     print(f"Configured US holdings: {', '.join(value['ticker'] for value in holdings) or '(none)'}")
     print(
         "Configured A-share holdings: "
         f"{', '.join(value['ticker'] for value in a_share_holdings) or '(none; placeholder ready)'}"
     )
+    print(f"Configured focus topics: {', '.join(value['name'] for value in focus_topics) or '(none)'}")
     print(f"Runs dir: {runs_dir}")
     print(f"Next brief path: {output_path}")
     schedule = settings.get("schedule", {})

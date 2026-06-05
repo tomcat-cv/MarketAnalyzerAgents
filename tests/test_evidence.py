@@ -101,8 +101,9 @@ class EvidenceTests(unittest.TestCase):
         )
         self.assertEqual(filter_evidence_pack(pack, {"summary"}).items, [])
         brief = evidence_only_brief_markdown(pack, date(2026, 6, 4))
-        self.assertIn("不直接用于持仓操作判断", brief)
-        self.assertIn("https://official.example/release", brief)
+        self.assertIn("## 2. 重点主题雷达", brief)
+        self.assertNotIn("https://official.example/release", brief)
+        self.assertIn("https://official.example/release", source_log_markdown(pack))
 
     def test_model_evidence_pack_excludes_collection_operational_metadata(self) -> None:
         pack = EvidencePack(
@@ -297,11 +298,11 @@ class EvidenceTests(unittest.TestCase):
         summary_item = item("https://official.example/release")
         summary_item.id = "EVID-001"
         summary_item.matched_tickers = ["NVDA"]
-        title_item = item("https://official.example/title", "Title only")
-        title_item.id = "EVID-002"
-        title_item.evidence_level = "title_only"
-        title_item.source_name = "巨潮资讯网"
-        title_item.matched_topics = ["A股", "A股重点方向：半导体"]
+        focus_item = item("https://query1.finance.yahoo.com/v8/finance/chart/%5ESOX", "PHLX Semiconductor Index：最新价 100.0000 USD，窗口下跌 1.00%")
+        focus_item.id = "EVID-002"
+        focus_item.source_name = "Yahoo Finance"
+        focus_item.source_type = "market_data_aggregator"
+        focus_item.matched_topics = ["主题:半导体:美股"]
         price_item = item("https://query1.finance.yahoo.com/v8/finance/chart/NVDA", "NVIDIA：最新股价 102.0000 USD，窗口上涨 2.00%")
         price_item.id = "EVID-003"
         price_item.source_name = "Yahoo Finance"
@@ -310,7 +311,7 @@ class EvidenceTests(unittest.TestCase):
         pack = EvidencePack(
             retrieved_at="2026-06-04T08:00:00+00:00",
             lookback_hours=24,
-            items=[summary_item, title_item, price_item],
+            items=[summary_item, focus_item, price_item],
             timezone="Asia/Shanghai",
             coverage=[
                 SourceCoverage(
@@ -323,10 +324,25 @@ class EvidenceTests(unittest.TestCase):
         )
         brief = model_summary_brief_markdown(
             pack,
-            {"EVID-001": "经验证的摘要。", "EVID-003": "NVDA最新股价102.0000美元，窗口上涨2.00%。"},
-            {"EVID-001": "这条证据需要关注后续影响。", "EVID-003": "价格快照只说明短期表现，不能单独解释原因。"},
+            {
+                "EVID-001": "经验证的摘要。",
+                "EVID-002": "SOX窗口下跌1.00%。",
+                "EVID-003": "NVDA最新股价102.0000美元，窗口上涨2.00%。",
+            },
+            {
+                "EVID-001": "这条证据需要关注后续影响。",
+                "EVID-002": "美股半导体方向偏弱。",
+                "EVID-003": "价格快照只说明短期表现，不能单独解释原因。",
+            },
             date(2026, 6, 4),
-            holdings=[{"ticker": "NVDA", "company": "NVIDIA"}],
+            holdings=[{"ticker": "NVDA", "company": "NVIDIA", "market": "us_equities"}],
+            focus_topics=[
+                {
+                    "id": "semiconductors",
+                    "name": "半导体",
+                    "segments": [{"name": "美股半导体", "topics": ["主题:半导体:美股"]}],
+                }
+            ],
             portfolio_actions=[
                 PortfolioAction(
                     ticker="NVDA",
@@ -339,16 +355,17 @@ class EvidenceTests(unittest.TestCase):
             ],
         )
         self.assertIn("经验证的摘要", brief)
-        self.assertIn("## 1. 市场总体资讯（可靠信源）", brief)
-        self.assertIn("## 2. 持仓公司相关资讯（可靠信源）", brief)
-        self.assertIn("## 3. 根据市场动态分析持仓应该作何操作", brief)
+        self.assertIn("## 1. 市场概览", brief)
+        self.assertIn("## 2. 重点主题雷达", brief)
+        self.assertIn("### 半导体", brief)
+        self.assertIn("### 美股持仓", brief)
+        self.assertIn("## 4. 根据市场动态分析持仓应该作何操作", brief)
         self.assertIn("| NVDA | 持有 | 中 |", brief)
         self.assertIn("2026-06-04 16:00", brief)
         self.assertIn("最新股价 102.0000 USD", brief)
         self.assertIn("来源链接", brief)
         self.assertIn("价格快照只说明短期表现", brief)
-        self.assertIn("Title only", brief)
-        self.assertIn("A股公告标题复核队列", brief)
+        self.assertNotIn("A股公告标题复核队列", brief)
         self.assertNotIn("## 附录", brief)
         self.assertNotIn("采集器覆盖", brief)
         self.assertNotIn("market_data_aggregator", brief)

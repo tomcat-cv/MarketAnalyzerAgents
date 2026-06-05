@@ -148,6 +148,7 @@ def configured_holdings(sources: Mapping[str, Any]) -> List[Dict[str, Any]]:
         holdings.append(
             {
                 "ticker": ticker,
+                "symbol": str(entry.get("symbol", ticker)).strip() or ticker,
                 "company": str(entry.get("company", ticker)).strip() or ticker,
                 "themes": [str(value) for value in entry.get("themes", [])],
             }
@@ -172,11 +173,68 @@ def configured_a_share_holdings(sources: Mapping[str, Any]) -> List[Dict[str, An
         holdings.append(
             {
                 "ticker": ticker,
+                "symbol": str(entry.get("symbol", ticker)).strip() or ticker,
                 "company": str(entry.get("company", ticker)).strip() or ticker,
                 "themes": [str(value) for value in entry.get("themes", [])],
             }
         )
     return holdings
+
+
+def configured_portfolio_holdings(sources: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    holdings: List[Dict[str, Any]] = []
+    for market, values in [
+        ("a_share", configured_a_share_holdings(sources)),
+        ("us_equities", configured_holdings(sources)),
+    ]:
+        for holding in values:
+            copied = dict(holding)
+            copied["market"] = market
+            if "symbol" in holding:
+                copied["symbol"] = str(holding["symbol"]).strip()
+            holdings.append(copied)
+    return holdings
+
+
+def configured_focus_topics(sources: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    raw_topics = sources.get("focus_topics", [])
+    if not isinstance(raw_topics, list):
+        return []
+
+    topics: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in raw_topics:
+        if not isinstance(entry, Mapping):
+            continue
+        topic_id = str(entry.get("id", entry.get("name", ""))).strip()
+        if not topic_id or topic_id in seen:
+            continue
+        seen.add(topic_id)
+        raw_segments = entry.get("segments", [])
+        segments = []
+        if isinstance(raw_segments, list):
+            for segment in raw_segments:
+                if not isinstance(segment, Mapping):
+                    continue
+                name = str(segment.get("name", "")).strip()
+                tags = [str(value).strip() for value in segment.get("topics", []) if str(value).strip()]
+                if name and tags:
+                    segments.append({"name": name, "topics": tags})
+        instruments = []
+        raw_instruments = entry.get("instruments", [])
+        if isinstance(raw_instruments, list):
+            for instrument in raw_instruments:
+                if isinstance(instrument, Mapping):
+                    instruments.append(dict(instrument))
+        topics.append(
+            {
+                "id": topic_id,
+                "name": str(entry.get("name", topic_id)).strip() or topic_id,
+                "segments": segments,
+                "instruments": instruments,
+            }
+        )
+    return topics
 
 
 def canonical_url(value: str) -> str:
@@ -550,6 +608,11 @@ def _item_matches_holdings(item: EvidenceItem, holding_tickers: set[str]) -> boo
     return bool({ticker.upper() for ticker in item.matched_tickers} & holding_tickers)
 
 
+def _item_matches_topics(item: EvidenceItem, topics: Iterable[str]) -> bool:
+    topic_set = {topic for topic in topics if topic}
+    return bool(set(item.matched_topics) & topic_set)
+
+
 def _display_datetime(value: str, timezone_name: str) -> str:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -634,15 +697,12 @@ def _append_information_group(
     analyses: Mapping[str, str],
     timezone_name: str,
     empty_message: str,
-    compact_title_only: bool = False,
 ) -> None:
     parts.extend([f"### {heading}", ""])
     if not items:
         parts.extend([f"- {empty_message}", ""])
         return
-    full_items = [item for item in items if not compact_title_only or item.evidence_level != "title_only"]
-    title_only_items = [item for item in items if compact_title_only and item.evidence_level == "title_only"]
-    for item in full_items:
+    for item in items:
         _append_information_item(
             parts,
             item,
@@ -651,31 +711,65 @@ def _append_information_group(
             heading_level=4,
             timezone_name=timezone_name,
         )
-    if title_only_items:
-        grouped: Dict[str, List[EvidenceItem]] = {}
-        for item in title_only_items:
-            topic = next(
-                (value for value in item.matched_topics if value and value != "A股"),
-                "A股公告",
-            )
-            grouped.setdefault(topic, []).append(item)
-        parts.extend(
-            [
-                "#### A股公告标题复核队列",
-                "",
-                "以下条目来自法定披露平台，但只有公告标题，未纳入持仓操作分析：",
-                "",
+
+
+def _append_focus_topic_radar(
+    parts: List[str],
+    *,
+    focus_topics: Sequence[Mapping[str, Any]],
+    items: Sequence[EvidenceItem],
+    summaries: Mapping[str, str],
+    analyses: Mapping[str, str],
+    timezone_name: str,
+) -> None:
+    parts.extend(["", "## 2. 重点主题雷达", ""])
+    if not focus_topics:
+        parts.extend(["- 尚未配置重点主题。请在 `config/sources.json` 的 `focus_topics` 中维护。", ""])
+        return
+
+    summary_items = [item for item in items if item.evidence_level == "summary"]
+    for topic in focus_topics:
+        topic_name = str(topic.get("name", "")).strip() or str(topic.get("id", "主题")).strip()
+        parts.extend([f"### {topic_name}", ""])
+        segments = topic.get("segments", [])
+        if not isinstance(segments, list):
+            segments = []
+        if not segments:
+            parts.extend(["- 该主题尚未配置分组标签。", ""])
+            continue
+        for segment in segments:
+            if not isinstance(segment, Mapping):
+                continue
+            segment_name = str(segment.get("name", "")).strip()
+            segment_topics = [str(value).strip() for value in segment.get("topics", []) if str(value).strip()]
+            segment_items = [
+                item
+                for item in summary_items
+                if _item_matches_topics(item, segment_topics)
             ]
-        )
-        for topic, topic_items in grouped.items():
-            parts.extend([f"##### {topic}（{len(topic_items)} 条）", ""])
-            for item in topic_items:
-                parts.append(
-                    f"- [{item.id} · {item.title}]({item.url}) · "
-                    f"{_display_datetime_readable(item.published_at, timezone_name)} · "
-                    "仅有标题，需打开原文核验具体影响。"
-                )
-            parts.append("")
+            if len(segments) == 1 and segment_name == topic_name:
+                if not segment_items:
+                    parts.extend(["- 本窗口内，已启用信源未采集到该主题的正文级证据。", ""])
+                    continue
+                for item in segment_items:
+                    _append_information_item(
+                        parts,
+                        item,
+                        summaries,
+                        analyses,
+                        heading_level=4,
+                        timezone_name=timezone_name,
+                    )
+                continue
+            _append_information_group(
+                parts,
+                heading=segment_name,
+                items=segment_items,
+                summaries=summaries,
+                analyses=analyses,
+                timezone_name=timezone_name,
+                empty_message="本窗口内，已启用信源未采集到该主题分组的正文级证据。",
+            )
 
 
 def _coverage_status_label(status: str) -> str:
@@ -696,6 +790,7 @@ def model_summary_brief_markdown(
     run_date: date,
     *,
     holdings: Sequence[Mapping[str, Any]] = (),
+    focus_topics: Sequence[Mapping[str, Any]] = (),
     portfolio_actions: Sequence[PortfolioAction] = (),
 ) -> str:
     summary_items = [item for item in pack.items if item.evidence_level == "summary"]
@@ -704,7 +799,22 @@ def model_summary_brief_markdown(
         for holding in holdings
         if str(holding.get("ticker", "")).strip()
     }
-    market_items = [item for item in pack.items if not _item_matches_holdings(item, holding_tickers)]
+    focus_tags = {
+        str(tag).strip()
+        for topic in focus_topics
+        if isinstance(topic, Mapping)
+        for segment in topic.get("segments", [])
+        if isinstance(segment, Mapping)
+        for tag in segment.get("topics", [])
+        if str(tag).strip()
+    }
+    market_items = [
+        item
+        for item in pack.items
+        if item.evidence_level == "summary"
+        and not _item_matches_holdings(item, holding_tickers)
+        and not _item_matches_topics(item, focus_tags)
+    ]
     a_share_market_items = [item for item in market_items if _is_a_share_item(item)]
     us_market_items = [item for item in market_items if not _is_a_share_item(item)]
     level_counts: Dict[str, int] = {}
@@ -717,22 +827,21 @@ def model_summary_brief_markdown(
         f"- **信息窗口：** {_window_description(pack)}",
         "- **阅读说明：** 每条信息均附原始链接；完整采集覆盖和来源日志已单独保存。",
         "",
-        "## 1. 市场总体资讯（可靠信源）",
+        "## 1. 市场概览",
         "",
     ]
     _append_information_group(
         parts,
-        heading="A股市场整体与重点方向",
+        heading="A股市场概览",
         items=a_share_market_items,
         summaries=summaries,
         analyses=analyses,
         timezone_name=pack.timezone,
-        empty_message="本窗口内，已启用信源未采集到A股整体或重点方向条目；这不代表市场没有发生事件。",
-        compact_title_only=True,
+        empty_message="本窗口内，已启用信源未采集到A股市场概览条目；这不代表市场没有发生事件。",
     )
     _append_information_group(
         parts,
-        heading="美股市场整体与宏观驱动",
+        heading="美股市场概览与宏观驱动",
         items=us_market_items,
         summaries=summaries,
         analyses=analyses,
@@ -740,40 +849,54 @@ def model_summary_brief_markdown(
         empty_message="本窗口内，已启用信源未采集到美股整体或宏观驱动条目；这不代表市场没有发生事件。",
     )
 
-    parts.extend(["", "## 2. 持仓公司相关资讯（可靠信源）", ""])
+    _append_focus_topic_radar(
+        parts,
+        focus_topics=focus_topics,
+        items=pack.items,
+        summaries=summaries,
+        analyses=analyses,
+        timezone_name=pack.timezone,
+    )
+
+    parts.extend(["", "## 3. 持仓简报", ""])
     if not holdings:
         parts.append(
-            "- 尚未配置美股持仓。请在 `config/sources.json` 的 "
-            "`portfolios.us_equities.holdings` 中维护持仓。"
+            "- 尚未配置持仓。请在 `config/sources.json` 的 `portfolios` 中维护基金或个股。"
         )
-    for holding in holdings:
-        ticker = str(holding.get("ticker", "")).upper().strip()
-        company = str(holding.get("company", ticker)).strip() or ticker
-        related = [item for item in pack.items if ticker in {value.upper() for value in item.matched_tickers}]
-        parts.extend([f"### {ticker} · {company}", ""])
-        if not related:
-            parts.append(
-                "- 本窗口内，配置的可靠信源未采集到该持仓的公司相关条目；"
-                "这不代表公司没有发生事件。"
-            )
-            parts.append("")
+    market_labels = [("a_share", "A股持仓"), ("us_equities", "美股持仓")]
+    for market, label in market_labels:
+        market_holdings = [holding for holding in holdings if str(holding.get("market", "us_equities")) == market]
+        if not market_holdings:
             continue
-        for item in related:
-            _append_information_item(
-                parts,
-                item,
-                summaries,
-                analyses,
-                heading_level=4,
-                timezone_name=pack.timezone,
-            )
+        parts.extend([f"### {label}", ""])
+        for holding in market_holdings:
+            ticker = str(holding.get("ticker", "")).upper().strip()
+            company = str(holding.get("company", ticker)).strip() or ticker
+            related = [item for item in pack.items if ticker in {value.upper() for value in item.matched_tickers}]
+            parts.extend([f"#### {ticker} · {company}", ""])
+            if not related:
+                parts.append(
+                    "- 本窗口内，配置的可靠信源未采集到该持仓的相关条目；"
+                    "这不代表该持仓没有发生事件。"
+                )
+                parts.append("")
+                continue
+            for item in related:
+                _append_information_item(
+                    parts,
+                    item,
+                    summaries,
+                    analyses,
+                    heading_level=5,
+                    timezone_name=pack.timezone,
+                )
 
     actions_by_ticker = {action.ticker: action for action in portfolio_actions}
     items_by_id = {item.id: item for item in pack.items}
     parts.extend(
         [
             "",
-            "## 3. 根据市场动态分析持仓应该作何操作",
+            "## 4. 根据市场动态分析持仓应该作何操作",
             "",
             "> 以下为基于本期可靠来源证据的研究判断，不构成个性化投资建议。"
             "标题级和元数据级条目不参与操作判断；缺少充分证据时优先观察或维持原计划。",
@@ -887,6 +1010,7 @@ def evidence_only_brief_markdown(
         {},
         run_date,
         holdings=holdings,
+        focus_topics=[],
         portfolio_actions=actions,
     )
 

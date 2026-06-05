@@ -20,7 +20,9 @@ from .evidence import (
     EvidencePack,
     SourceCoverage,
     configured_a_share_holdings,
+    configured_focus_topics,
     configured_holdings,
+    configured_portfolio_holdings,
     dedupe_evidence,
     new_evidence_pack,
 )
@@ -738,24 +740,53 @@ def collect_yahoo_market_snapshot(
     ]
 
 
+def yahoo_focus_topic_instruments(sources: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    instruments: List[Dict[str, Any]] = []
+    for topic in configured_focus_topics(sources):
+        topic_name = str(topic.get("name", "")).strip()
+        for instrument in topic.get("instruments", []):
+            if not isinstance(instrument, Mapping):
+                continue
+            symbol = str(instrument.get("symbol", "")).strip()
+            if not symbol:
+                continue
+            instruments.append(
+                {
+                    "symbol": symbol,
+                    "name": str(instrument.get("name", symbol)).strip() or symbol,
+                    "topics": [str(value) for value in instrument.get("topics", [])],
+                    "tickers": [str(value) for value in instrument.get("tickers", [])],
+                    "interval": str(instrument.get("interval", "1d")),
+                    "price_label": str(instrument.get("price_label", "最新价")),
+                    "source_type": "market_data_aggregator",
+                    "coverage_category": "focus_topic_snapshot",
+                    "coverage_detail": f"重点主题：{topic_name}。",
+                }
+            )
+    return instruments
+
+
 def yahoo_holding_price_instruments(sources: Mapping[str, Any]) -> List[Dict[str, Any]]:
     instruments: List[Dict[str, Any]] = []
-    for holding in configured_holdings(sources):
+    for holding in configured_portfolio_holdings(sources):
         ticker = str(holding.get("ticker", "")).upper().strip()
-        if not ticker:
+        symbol = str(holding.get("symbol", ticker)).strip()
+        if not ticker or not symbol:
             continue
         company = str(holding.get("company", ticker)).strip() or ticker
+        market = str(holding.get("market", "us_equities"))
+        market_label = "A股" if market == "a_share" else "美股"
         instruments.append(
             {
-                "symbol": ticker,
+                "symbol": symbol,
                 "name": company,
-                "topics": ["美股持仓行情", *[str(value) for value in holding.get("themes", [])]],
+                "topics": [f"{market_label}持仓行情", *[str(value) for value in holding.get("themes", [])]],
                 "tickers": [ticker],
                 "interval": "1h",
                 "price_label": "最新股价",
                 "source_type": "market_data_aggregator",
                 "coverage_category": "holding_price_snapshot",
-                "coverage_detail": "按已配置美股持仓自动采集股价变化与最新价格。",
+                "coverage_detail": f"按已配置{market_label}持仓自动采集行情变化与最新价格。",
             }
         )
     return instruments
@@ -892,15 +923,22 @@ def collect_evidence(
     yahoo_config = source_collectors.get("yahoo_market_snapshots", {})
     if yahoo_config.get("enabled", False):
         yahoo_instruments = list(yahoo_config.get("instruments", []))
+        configured_symbols = {
+            str(instrument.get("symbol", "")).upper().strip()
+            for instrument in yahoo_instruments
+            if isinstance(instrument, Mapping)
+        }
+        for instrument in yahoo_focus_topic_instruments(sources):
+            symbol_key = str(instrument.get("symbol", "")).upper().strip()
+            if symbol_key and symbol_key not in configured_symbols:
+                yahoo_instruments.append(instrument)
+                configured_symbols.add(symbol_key)
         if yahoo_config.get("include_us_holding_prices", True):
-            configured_symbols = {
-                str(instrument.get("symbol", "")).upper().strip()
-                for instrument in yahoo_instruments
-                if isinstance(instrument, Mapping)
-            }
             for instrument in yahoo_holding_price_instruments(sources):
-                if str(instrument.get("symbol", "")).upper().strip() not in configured_symbols:
+                symbol_key = str(instrument.get("symbol", "")).upper().strip()
+                if symbol_key and symbol_key not in configured_symbols:
                     yahoo_instruments.append(instrument)
+                    configured_symbols.add(symbol_key)
         for instrument in yahoo_instruments:
             name = f"Yahoo Finance / {instrument.get('name', instrument.get('symbol', 'unknown'))}"
             category = str(instrument.get("coverage_category", "market_snapshot"))

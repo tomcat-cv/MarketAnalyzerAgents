@@ -47,8 +47,9 @@ class PromptingTests(unittest.TestCase):
         self.assertIn("price-only movement", prompt)
         self.assertIn("Do not calculate new averages", prompt)
         self.assertIn("Do not include an appendix", prompt)
-        self.assertIn("## 1. 市场总体资讯（可靠信源）", prompt)
-        self.assertIn("## 3. 根据市场动态分析持仓应该作何操作", prompt)
+        self.assertIn("## 1. 市场概览", prompt)
+        self.assertIn("## 2. 重点主题雷达", prompt)
+        self.assertIn("## 4. 根据市场动态分析持仓应该作何操作", prompt)
         self.assertIn("Focus on semiconductors", prompt)
         self.assertIn("not factual evidence", prompt)
 

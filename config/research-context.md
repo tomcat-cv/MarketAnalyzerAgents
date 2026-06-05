@@ -8,7 +8,7 @@ Build a daily 5-minute market research brief that surfaces high-signal changes i
 
 - US equities: broad-market direction plus AI infrastructure, semiconductors, data-center power demand, and energy. Current configured holdings: MU, BE, NVDA, MRVL, NOK.
 - A-shares: broad-market direction plus technology, semiconductors, semiconductor equipment/materials, AI compute infrastructure, and related industrial policy. No A-share holdings are currently configured; the portfolio slot is intentionally empty.
-- Metals and funds: non-ferrous metals, silver, gold, and related A-share ETFs/funds when there is a macro, policy, supply, or positioning catalyst.
+- Focus topics: user-configured themes such as semiconductors, gold, and silver. Themes are independent from portfolio holdings and should use the most relevant market or cross-asset evidence sources.
 - Cross-market drivers: Federal Reserve policy, Treasury yields, inflation/jobs data, USD, oil, copper, gold/silver, market breadth, volatility, and risk appetite.
 
 ## What Counts As Signal
@@ -30,12 +30,12 @@ Build a daily 5-minute market research brief that surfaces high-signal changes i
 ## Preferred Output Style
 
 - Write the brief in Chinese, concise but not shallow.
-- Use exactly three primary sections: market-wide information, holding-company information, and evidence-grounded holding actions.
-- Split market-wide information into A-share broad market/key themes and US broad market/macro drivers.
+- Use four primary sections: market overview, focus topic radar, portfolio brief, and evidence-grounded holding actions.
+- Split semiconductors and similar equity themes by A-share and US views when both are configured. Treat gold, silver, rates, USD, oil, and similar cross-asset themes independently rather than forcing them into A-share or US equity buckets.
 - The daily freshness window runs from 00:00 of the previous calendar day to the actual morning run time in Asia/Shanghai.
 - For every important claim, include source links and make clear whether the evidence is primary, official, or reporting.
 - The model may infer conservative holding actions only from summary-level evidence, and every factual premise must cite supplied evidence IDs.
-- Title-only and metadata-only items are displayed under the relevant information section but never used for holding actions.
+- Title-only and metadata-only items stay in the source log unless they are directly tied to a configured holding; they are never used for holding actions.
 - When evidence is insufficient, recommend observing or maintaining the existing plan with low confidence; do not invent position sizes or price targets.
 - Do not treat an event that was not captured by collectors as evidence that the event did not happen.
 - In the appendix, distinguish sources that were queried with no matching items from disabled, key-missing, reserved, or failed sources.

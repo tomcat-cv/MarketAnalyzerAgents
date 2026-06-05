@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
 
-from .evidence import configured_holdings
+from .evidence import configured_portfolio_holdings
 
 
 def configured_guidance(settings: Mapping[str, Any], inputs: Mapping[str, Any]) -> str:
@@ -33,7 +33,7 @@ def build_openai_messages(
     output_format: str = "markdown",
     evidence_markdown: str = "",
 ) -> tuple[str, str]:
-    holdings = configured_holdings(inputs.get("sources", {}))
+    holdings = configured_portfolio_holdings(inputs.get("sources", {}))
     holdings_json = json.dumps(holdings, ensure_ascii=False, indent=2)
     guidance = configured_guidance(settings, inputs)
     guidance_block = (
@@ -135,7 +135,7 @@ def build_codex_task_prompt(
     output_format: str = "markdown",
     evidence_markdown: str = "",
 ) -> str:
-    holdings = configured_holdings(inputs.get("sources", {}))
+    holdings = configured_portfolio_holdings(inputs.get("sources", {}))
     holdings_json = json.dumps(holdings, ensure_ascii=False, indent=2)
     guidance = configured_guidance(settings, inputs)
     guidance_block = (
@@ -193,13 +193,17 @@ Verified Evidence Pack:
 Content structure:
 # 每日研究简报 - {run_date.isoformat()}
 
-## 1. 市场总体资讯（可靠信源）
-- Include every collected non-holding item in the evidence window with source and publication time.
+## 1. 市场概览
+- Include broad A-share and US market items with source and publication time.
 
-## 2. 持仓公司相关资讯（可靠信源）
-- Group by configured holding. Include every collected holding item with source and publication time.
+## 2. 重点主题雷达
+- Group configured focus topics separately. If a theme has A-share and US views, keep them separate.
+- For cross-asset themes such as gold or silver, do not force them into A-share or US equity buckets.
 
-## 3. 根据市场动态分析持仓应该作何操作
+## 3. 持仓简报
+- Group configured holdings by market, including funds or stocks as configured.
+
+## 4. 根据市场动态分析持仓应该作何操作
 - One row per holding: action, confidence, evidence-grounded rationale, evidence links, next watch item.
 
 Do not include an appendix with collector coverage or source logs in the brief body; the CLI writes

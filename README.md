@@ -11,7 +11,7 @@
 │   ├── prompt-overrides.md         # 部署时可调整的额外提示词偏好
 │   ├── research-context.md         # 研究目标、偏好、过滤规则
 │   ├── settings.json               # 后端、模型、路径、时区等配置
-│   └── sources.json                # 信源采集器与持仓配置
+│   └── sources.json                # 重点主题、持仓与信源采集器配置
 ├── memory/
 │   ├── feedback.example.md         # 反馈模板
 │   └── feedback.md                 # 反馈记忆（Git 忽略）
@@ -149,13 +149,22 @@ Verified Evidence Pack（summary / metadata_only / title_only）
 输出 briefs/YYYY-MM-DD-brief.html + source-log.md
 ```
 
+### 配置模型
+
+`config/sources.json` 中有两类用户配置：
+
+- `focus_topics`：重点主题雷达，例如半导体、黄金、白银。半导体这类股票主题可以拆成 A股/美股分组；黄金、白银这类跨资产主题单独展示，不塞进 A股或美股。
+- `portfolios`：用户持仓，可以是个股或基金。A股和美股分开配置，持仓简报按市场分组展示。
+
+当前免费部署版本的主题行情主要用 Yahoo Finance 代理：A股半导体 ETF、PHLX Semiconductor Index、COMEX Gold/Silver futures、GLD、SLV。巨潮资讯默认只查询已配置 A股持仓，不再用 `黄金`、`白银`、`业绩预告` 这类泛关键词扫全市场。
+
 ### 证据等级
 
 证据分级是为了控制大模型“能用什么、不能用什么”，避免只凭标题或提交记录做过度推断：
 
 - `summary`：有正文摘要、行情快照正文或 filing 正文摘录。会交给模型摘要、解读，并可作为持仓操作判断的依据。
 - `metadata_only`：只有 filing 表单号、提交日期、文档描述等元数据，正文没有成功抓取或正文太短。会展示给读者复核，但不交给模型做操作判断。
-- `title_only`：只有标题，例如巨潮公告标题或没有摘要的 RSS 条目。会展示为复核队列，不交给模型做操作判断。
+- `title_only`：只有标题，例如巨潮公告标题或没有摘要的 RSS 条目。默认仅进入来源日志，不交给模型做操作判断。
 
 仅 `summary` 会进入模型请求。如果本期没有 `summary`，程序直接生成待核验简报，不调用模型。
 
@@ -163,9 +172,10 @@ Verified Evidence Pack（summary / metadata_only / title_only）
 
 ### 简报结构
 
-1. 市场总体资讯（可靠信源）
-2. 持仓公司相关资讯（可靠信源）
-3. 持仓操作分析（加仓/减仓/持有/观察）
+1. 市场概览
+2. 重点主题雷达
+3. 持仓简报
+4. 持仓操作分析（加仓/减仓/持有/观察）
 
 加仓或减仓必须引用证据，证据不足时只能给低置信度判断。
 
@@ -175,7 +185,7 @@ Verified Evidence Pack（summary / metadata_only / title_only）
 - SEC EDGAR：按美股持仓查找最新 filings
 - Federal Reserve、BLS、EIA 官方 RSS
 - NVIDIA、Marvell、Bloom Energy 官方公告 RSS
-- 巨潮资讯法定披露平台：A股市场事件、重点方向关键词
+- 巨潮资讯法定披露平台：按已配置 A股持仓查询公告标题
 
 ### 预留采集器（默认关闭）
 
