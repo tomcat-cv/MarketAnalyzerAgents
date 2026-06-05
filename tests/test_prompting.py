@@ -23,9 +23,11 @@ class PromptingTests(unittest.TestCase):
         )
         self.assertIn("evidence-grounded market research analyst", system)
         self.assertIn('"summaries"', user)
+        self.assertIn('"analysis"', user)
         self.assertIn('"portfolio_actions"', user)
         self.assertIn('"NVDA"', user)
         self.assertIn("2026-05-29", user)
+        self.assertIn("price-only movement", user)
         self.assertNotIn("AI agents", user)
 
     def test_codex_prompt_bans_claude_and_n8n(self) -> None:
@@ -37,6 +39,8 @@ class PromptingTests(unittest.TestCase):
         )
         self.assertIn("Do not use Claude", prompt)
         self.assertIn("Do not use n8n", prompt)
+        self.assertIn("price-only movement", prompt)
+        self.assertIn("Do not include an appendix", prompt)
         self.assertIn("## 1. 市场总体资讯（可靠信源）", prompt)
         self.assertIn("## 3. 根据市场动态分析持仓应该作何操作", prompt)
 

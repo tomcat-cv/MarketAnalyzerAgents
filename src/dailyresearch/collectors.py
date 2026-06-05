@@ -265,6 +265,128 @@ def _sequence_value(values: Mapping[str, Any], key: str, index: int) -> str:
     return str(raw[index])
 
 
+def _xml_child_text(element: ET.Element | None, path: str) -> str:
+    if element is None:
+        return ""
+    found = element.find(path)
+    if found is not None and found.text:
+        return found.text.strip()
+    return ""
+
+
+def _extract_sec_form4_details(raw_document: str) -> dict[str, str]:
+    try:
+        root = ET.fromstring(raw_document.encode("utf-8"))
+    except ET.ParseError:
+        return {}
+
+    owner_name = _xml_child_text(root, ".//reportingOwnerId/rptOwnerName")
+    issuer_name = _xml_child_text(root, ".//issuer/issuerName")
+    issuer_ticker = _xml_child_text(root, ".//issuer/issuerTradingSymbol")
+    relationship_parts = []
+    relationship = root.find(".//reportingOwnerRelationship")
+    if _xml_child_text(relationship, "isDirector") in {"1", "true", "True"}:
+        relationship_parts.append("董事")
+    if _xml_child_text(relationship, "isOfficer") in {"1", "true", "True"}:
+        officer_title = _xml_child_text(relationship, "officerTitle")
+        relationship_parts.append(f"高管{f'（{officer_title}）' if officer_title else ''}")
+    if _xml_child_text(relationship, "isTenPercentOwner") in {"1", "true", "True"}:
+        relationship_parts.append("10%以上股东")
+    if _xml_child_text(relationship, "isOther") in {"1", "true", "True"}:
+        other_text = _xml_child_text(relationship, "otherText")
+        relationship_parts.append(other_text or "其他关系人")
+
+    acquisition_labels = {
+        "A": "取得/买入或获授",
+        "D": "处置/卖出或转出",
+    }
+    transaction_lines: List[str] = []
+    sale_shares_total = 0.0
+    gift_shares_total = 0.0
+    sale_value_total = 0.0
+    first_pre_transaction_owned = ""
+    for transaction in root.findall(".//nonDerivativeTransaction"):
+        security = _xml_child_text(transaction, "securityTitle/value")
+        date_value = _xml_child_text(transaction, "transactionDate/value")
+        code = _xml_child_text(transaction, "transactionCoding/transactionCode")
+        shares = _xml_child_text(transaction, "transactionAmounts/transactionShares/value")
+        price = _xml_child_text(transaction, "transactionAmounts/transactionPricePerShare/value")
+        acquired_disposed = _xml_child_text(
+            transaction,
+            "transactionAmounts/transactionAcquiredDisposedCode/value",
+        )
+        owned_after = _xml_child_text(
+            transaction,
+            "postTransactionAmounts/sharesOwnedFollowingTransaction/value",
+        )
+        direct = _xml_child_text(transaction, "ownershipNature/directOrIndirectOwnership/value")
+        direction = acquisition_labels.get(acquired_disposed, acquired_disposed or "未标明方向")
+        pre_transaction_owned = ""
+        try:
+            shares_value = float(shares)
+            price_value = float(price) if price else 0.0
+            owned_after_value = float(owned_after)
+            if acquired_disposed == "D":
+                pre_transaction_owned = f"{owned_after_value + shares_value:.0f}"
+            elif acquired_disposed == "A":
+                pre_transaction_owned = f"{owned_after_value - shares_value:.0f}"
+            if not first_pre_transaction_owned and pre_transaction_owned:
+                first_pre_transaction_owned = pre_transaction_owned
+            if code == "S" and acquired_disposed == "D":
+                sale_shares_total += shares_value
+                sale_value_total += shares_value * price_value
+            if code == "G" and acquired_disposed == "D":
+                gift_shares_total += shares_value
+        except (TypeError, ValueError):
+            pre_transaction_owned = ""
+        transaction_lines.append(
+            "；".join(
+                value
+                for value in [
+                    f"证券：{security}" if security else "",
+                    f"日期：{date_value}" if date_value else "",
+                    f"交易代码：{code}" if code else "",
+                    f"方向：{direction}",
+                    f"股数：{shares}" if shares else "",
+                    f"每股价格：{price}" if price else "",
+                    f"交易前估算持股：{pre_transaction_owned}" if pre_transaction_owned else "",
+                    f"交易后持股：{owned_after}" if owned_after else "",
+                    f"持有性质：{direct}" if direct else "",
+                ]
+                if value
+            )
+        )
+
+    lines = [
+        f"发行人：{issuer_name}" if issuer_name else "",
+        f"证券代码：{issuer_ticker}" if issuer_ticker else "",
+        f"报告人：{owner_name}" if owner_name else "",
+        f"报告人与公司关系：{', '.join(relationship_parts)}" if relationship_parts else "",
+    ]
+    if transaction_lines:
+        lines.append("非衍生证券交易明细：" + " | ".join(transaction_lines))
+    aggregate_parts = []
+    if first_pre_transaction_owned:
+        aggregate_parts.append(f"首笔交易前估算持股：{first_pre_transaction_owned}")
+    if sale_shares_total:
+        aggregate_parts.append(f"卖出合计股数：{sale_shares_total:.0f}")
+        aggregate_parts.append(
+            f"卖出交易估算总金额：{sale_value_total:.2f}美元"
+        )
+        aggregate_parts.append(f"卖出交易估算总金额约{sale_value_total / 100000000:.2f}亿美元")
+        aggregate_parts.append(f"卖出交易估算总金额约{sale_value_total / 100000000:.1f}亿美元")
+    if gift_shares_total:
+        aggregate_parts.append(f"赠与或无对价转出合计股数：{gift_shares_total:.0f}")
+    if aggregate_parts:
+        lines.append("汇总：" + "；".join(aggregate_parts))
+    if not any(lines):
+        return {}
+    return {
+        "owner_name": owner_name,
+        "description": " ".join(line for line in lines if line),
+    }
+
+
 def collect_sec_filings(
     *,
     client: HttpClient,
@@ -320,13 +442,25 @@ def collect_sec_filings(
                 f"Primary document description: {description or document}."
             )
             document_text = ""
+            raw_document = ""
+            structured_details = {}
             if fetch_document_text and document:
                 try:
-                    document_text = strip_html(client.get_text(url))[:max_document_chars]
+                    raw_document = client.get_text(url)
+                    if form == "4":
+                        structured_details = _extract_sec_form4_details(raw_document)
+                        if not structured_details and "/xslF345X" in url and document.endswith(".xml"):
+                            raw_xml_url = re.sub(r"/xslF345X\d+/", "/", url)
+                            structured_details = _extract_sec_form4_details(client.get_text(raw_xml_url))
+                    document_text = strip_html(raw_document)[:max_document_chars]
                 except Exception:
                     document_text = ""
+            if form == "4" and structured_details.get("owner_name"):
+                title = f"{ticker} 内部人持股变动：{structured_details['owner_name']}"
             evidence_level = "summary" if len(document_text) >= min_document_chars else "metadata_only"
             content = metadata
+            if structured_details.get("description"):
+                content += f" Structured Form 4 details: {structured_details['description']}."
             if document_text:
                 content += f" Filing text excerpt: {document_text}"
             items.append(
@@ -471,13 +605,14 @@ def collect_yahoo_market_snapshot(
     query_start = int((cutoff - timedelta(days=7)).timestamp())
     query_end = int((window_end + timedelta(days=1)).timestamp())
     encoded_symbol = urllib.parse.quote(symbol, safe="")
+    interval = str(instrument.get("interval", "1d")).strip() or "1d"
     api_url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?"
         + urllib.parse.urlencode(
             {
                 "period1": str(query_start),
                 "period2": str(query_end),
-                "interval": "1d",
+                "interval": interval,
                 "events": "history",
             }
         )
@@ -506,10 +641,19 @@ def collect_yahoo_market_snapshot(
     if not in_window:
         return []
     index, published, close = in_window[-1]
-    previous_rows = [row for row in available if row[1] < published]
-    previous_close = previous_rows[-1][2] if previous_rows else None
-    change = close - previous_close if previous_close not in {None, 0} else None
-    change_pct = (change / previous_close * 100) if change is not None and previous_close else None
+    if len(in_window) > 1:
+        baseline_index, baseline_time, baseline_close = in_window[0]
+        baseline_label = "窗口首个可比价格"
+        title_movement_prefix = "窗口"
+    else:
+        previous_rows = [row for row in available if row[1] < published]
+        baseline_index, baseline_time, baseline_close = (
+            previous_rows[-1] if previous_rows else (index, published, None)
+        )
+        baseline_label = "窗口前一可比价格"
+        title_movement_prefix = "较前值"
+    change = close - baseline_close if baseline_close not in {None, 0} else None
+    change_pct = (change / baseline_close * 100) if change is not None and baseline_close else None
     direction = "持平"
     if change is not None and change > 0:
         direction = "上涨"
@@ -521,32 +665,100 @@ def collect_yahoo_market_snapshot(
             return "(not provided)"
         return f"{float(values[position]):.4f}"
 
+    def numeric_values(values: Sequence[Any], positions: Sequence[int]) -> List[float]:
+        result_values: List[float] = []
+        for position in positions:
+            if position < len(values) and values[position] is not None:
+                result_values.append(float(values[position]))
+        return result_values
+
     currency = str(result.get("meta", {}).get("currency", "")).strip()
     movement = (
         f"{direction} {abs(change):.4f}（{change_pct:+.2f}%）"
         if change is not None and change_pct is not None
         else "缺少上一交易日可比收盘值"
     )
+    in_window_positions = [row[0] for row in in_window]
+    window_highs = numeric_values(highs, in_window_positions)
+    window_lows = numeric_values(lows, in_window_positions)
+    high = f"{max(window_highs):.4f}" if window_highs else value_at(highs, index)
+    low = f"{min(window_lows):.4f}" if window_lows else value_at(lows, index)
+    window_range_text = ""
+    if window_highs and window_lows and min(window_lows) != 0:
+        window_range = max(window_highs) - min(window_lows)
+        window_range_pct = window_range / min(window_lows) * 100
+        window_range_text = (
+            f" Window range: {window_range:.4f}. "
+            f"Rounded window range: {round(window_range):d}. "
+            f"Window range percent versus window low: {window_range_pct:.2f}%."
+        )
+    currency_suffix = f" {currency}" if currency else ""
     content = (
-        f"Yahoo Finance daily market snapshot for {name} ({symbol}). "
-        f"Close: {close:.4f} {currency}. Daily movement versus the prior available close: "
-        f"{movement}. High: {value_at(highs, index)}. Low: {value_at(lows, index)}."
+        f"Yahoo Finance price snapshot for {name} ({symbol}). "
+        f"Query interval: {interval}. Collection window: {cutoff.isoformat(timespec='seconds')} "
+        f"to {window_end.isoformat(timespec='seconds')}. "
+        f"Latest available price: {close:.4f}{currency_suffix} at "
+        f"{published.isoformat(timespec='seconds')}. "
+        f"Movement versus {baseline_label}"
     )
-    title_movement = f"{direction} {abs(change_pct):.2f}%" if change_pct is not None else "最新日线快照"
+    if baseline_close is not None:
+        content += (
+            f" ({baseline_time.isoformat(timespec='seconds')}, {baseline_close:.4f}"
+            f"{currency_suffix}): {movement}. "
+        )
+    else:
+        content += f": {movement}. "
+    content += f"Window high: {high}. Window low: {low}.{window_range_text}"
+    if api_url:
+        content += " Source data URL is the Yahoo Finance chart API URL attached to this evidence item."
+    title_price_label = str(instrument.get("price_label", "最新价")).strip() or "最新价"
+    title_movement = (
+        f"{title_movement_prefix}{direction} {abs(change_pct):.2f}%"
+        if change_pct is not None
+        else "最新快照"
+    )
+    raw_tickers = instrument.get("tickers", [])
+    if isinstance(raw_tickers, str):
+        matched_tickers = [raw_tickers.upper().strip()] if raw_tickers.strip() else []
+    else:
+        matched_tickers = [str(value).upper().strip() for value in raw_tickers if str(value).strip()]
     return [
         EvidenceItem(
             id="",
-            title=f"{name}：{title_movement}",
+            title=f"{name}：{title_price_label} {close:.4f}{currency_suffix}，{title_movement}",
             published_at=published.isoformat(timespec="seconds"),
             source_name="Yahoo Finance",
             source_type=str(instrument.get("source_type", "market_data_aggregator")),
-            url=f"https://finance.yahoo.com/quote/{encoded_symbol}",
+            url=api_url,
             content=content,
             matched_topics=[str(value) for value in instrument.get("topics", [])],
-            matched_tickers=[],
+            matched_tickers=matched_tickers,
             evidence_level="summary",
         )
     ]
+
+
+def yahoo_holding_price_instruments(sources: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    instruments: List[Dict[str, Any]] = []
+    for holding in configured_holdings(sources):
+        ticker = str(holding.get("ticker", "")).upper().strip()
+        if not ticker:
+            continue
+        company = str(holding.get("company", ticker)).strip() or ticker
+        instruments.append(
+            {
+                "symbol": ticker,
+                "name": company,
+                "topics": ["美股持仓行情", *[str(value) for value in holding.get("themes", [])]],
+                "tickers": [ticker],
+                "interval": "1h",
+                "price_label": "最新股价",
+                "source_type": "market_data_aggregator",
+                "coverage_category": "holding_price_snapshot",
+                "coverage_detail": "按已配置美股持仓自动采集股价变化与最新价格。",
+            }
+        )
+    return instruments
 
 
 def collect_finnhub_news(
@@ -679,8 +891,19 @@ def collect_evidence(
 
     yahoo_config = source_collectors.get("yahoo_market_snapshots", {})
     if yahoo_config.get("enabled", False):
-        for instrument in yahoo_config.get("instruments", []):
+        yahoo_instruments = list(yahoo_config.get("instruments", []))
+        if yahoo_config.get("include_us_holding_prices", True):
+            configured_symbols = {
+                str(instrument.get("symbol", "")).upper().strip()
+                for instrument in yahoo_instruments
+                if isinstance(instrument, Mapping)
+            }
+            for instrument in yahoo_holding_price_instruments(sources):
+                if str(instrument.get("symbol", "")).upper().strip() not in configured_symbols:
+                    yahoo_instruments.append(instrument)
+        for instrument in yahoo_instruments:
             name = f"Yahoo Finance / {instrument.get('name', instrument.get('symbol', 'unknown'))}"
+            category = str(instrument.get("coverage_category", "market_snapshot"))
             try:
                 items = collect_yahoo_market_snapshot(
                     client=http_client,
@@ -692,16 +915,17 @@ def collect_evidence(
                 _record_coverage(
                     pack,
                     name=name,
-                    category="market_snapshot",
+                    category=category,
                     status="collected" if items else "no_items",
                     item_count=len(items),
+                    detail=str(instrument.get("coverage_detail", "")),
                 )
             except Exception as exc:
                 pack.errors.append(f"Yahoo Finance collector failed for {name}: {exc}")
                 _record_coverage(
                     pack,
                     name=name,
-                    category="market_snapshot",
+                    category=category,
                     status="failed",
                     detail=str(exc),
                 )

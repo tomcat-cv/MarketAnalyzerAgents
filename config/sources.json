@@ -99,6 +99,7 @@
     "yahoo_market_snapshots": {
       "enabled": true,
       "role": "用于每日方向判断的免费补充行情聚合源，不属于监管披露源。",
+      "include_us_holding_prices": true,
       "instruments": [
         {
           "symbol": "000001.SS",

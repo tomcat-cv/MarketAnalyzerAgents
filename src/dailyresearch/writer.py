@@ -35,6 +35,10 @@ def runs_dir_for(root: Path, settings: Mapping[str, Any]) -> Path:
     return resolve_path(root, settings.get("runs_dir", "runs"))
 
 
+def source_log_path_for(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.stem}-source-log.md")
+
+
 def write_text(path: Path, content: str) -> Path:
     ensure_dirs([path.parent])
     path.write_text(content.rstrip() + "\n", encoding="utf-8")

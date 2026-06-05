@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
@@ -88,6 +88,7 @@ class PortfolioAction:
 @dataclass
 class ModelBrief:
     summaries: Dict[str, str]
+    analyses: Dict[str, str]
     portfolio_actions: List[PortfolioAction]
 
 
@@ -98,10 +99,24 @@ def _normalized_numbers(value: str) -> set[str]:
         suffix = "%" if token.endswith("%") else ""
         raw = token.rstrip("%").replace(",", "")
         try:
-            number = format(Decimal(raw).normalize(), "f")
+            decimal_value = Decimal(raw)
+            number = format(decimal_value.normalize(), "f")
         except InvalidOperation:
             continue
         normalized.add(number + suffix)
+        decimal_part = raw.partition(".")[2]
+        if decimal_part and len(decimal_part) > 2:
+            rounded = decimal_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            normalized.add(format(rounded.normalize(), "f") + suffix)
+        if suffix and decimal_part:
+            rounded_percent = decimal_value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            normalized.add(format(rounded_percent.normalize(), "f") + suffix)
+        if not suffix and abs(decimal_value) >= Decimal("10000"):
+            wan_value = decimal_value / Decimal("10000")
+            wan_rounded = wan_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            normalized.add(format(wan_rounded.normalize(), "f"))
+            wan_integer = wan_value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            normalized.add(format(wan_integer.normalize(), "f"))
     return normalized
 
 
@@ -315,16 +330,57 @@ def _extract_model_payload(text: str) -> Mapping[str, Any]:
     return payload
 
 
-def _parse_summary_entries(entries: Any, pack: EvidencePack) -> Dict[str, str]:
+def _validate_model_text(
+    *,
+    evidence_id: str,
+    field_name: str,
+    value: str,
+    evidence_item: EvidenceItem,
+    max_chars: int,
+    extra_number_context: str = "",
+) -> None:
+    if not value:
+        raise ValueError(f"Model returned an empty {field_name} for {evidence_id}.")
+    if URL_RE.search(value):
+        raise ValueError(f"Model {field_name} for {evidence_id} contains a URL.")
+    if len(value) > max_chars:
+        raise ValueError(f"Model {field_name} for {evidence_id} exceeds {max_chars} characters.")
+    allowed_numbers = _normalized_numbers(
+        f"{evidence_item.title} {evidence_item.published_at} {evidence_item.content} "
+        f"{extra_number_context}"
+    )
+    introduced_numbers = sorted(_normalized_numbers(value) - allowed_numbers)
+    if introduced_numbers:
+        raise ValueError(
+            f"Model {field_name} for {evidence_id} introduced unsupported numbers: "
+            f"{', '.join(introduced_numbers)}"
+        )
+
+
+def _parse_summary_entries(
+    entries: Any,
+    pack: EvidencePack,
+    *,
+    require_analysis: bool = False,
+) -> tuple[Dict[str, str], Dict[str, str]]:
     if not isinstance(entries, list):
         raise ValueError("Model output must contain a summaries list.")
 
     allowed_ids = {item.id for item in pack.items}
+    pack_number_context = " ".join(
+        f"{item.id} {item.title} {item.published_at} {item.content}" for item in pack.items
+    )
     summaries: Dict[str, str] = {}
+    analyses: Dict[str, str] = {}
     for entry in entries:
         if not isinstance(entry, Mapping):
             raise ValueError("Every model summary entry must be an object.")
-        if set(entry.keys()) != {"evidence_id", "summary"}:
+        expected_keys = {"evidence_id", "summary", "analysis"} if require_analysis else {"evidence_id", "summary"}
+        if set(entry.keys()) != expected_keys:
+            if require_analysis:
+                raise ValueError(
+                    "Every model summary entry must contain only evidence_id, summary, and analysis."
+                )
             raise ValueError("Every model summary entry must contain only evidence_id and summary.")
         evidence_id = str(entry.get("evidence_id", "")).strip()
         summary = re.sub(r"\s+", " ", str(entry.get("summary", ""))).strip()
@@ -332,35 +388,39 @@ def _parse_summary_entries(entries: Any, pack: EvidencePack) -> Dict[str, str]:
             raise ValueError(f"Model returned an unknown evidence ID: {evidence_id or '(empty)'}")
         if evidence_id in summaries:
             raise ValueError(f"Model returned duplicate evidence ID: {evidence_id}")
-        if not summary:
-            raise ValueError(f"Model returned an empty summary for {evidence_id}.")
-        if URL_RE.search(summary):
-            raise ValueError(f"Model summary for {evidence_id} contains a URL.")
-        if len(summary) > 800:
-            raise ValueError(f"Model summary for {evidence_id} exceeds 800 characters.")
         evidence_item = next(item for item in pack.items if item.id == evidence_id)
-        allowed_numbers = _normalized_numbers(
-            f"{evidence_item.title} {evidence_item.published_at} {evidence_item.content}"
+        _validate_model_text(
+            evidence_id=evidence_id,
+            field_name="summary",
+            value=summary,
+            evidence_item=evidence_item,
+            max_chars=800,
         )
-        introduced_numbers = sorted(_normalized_numbers(summary) - allowed_numbers)
-        if introduced_numbers:
-            raise ValueError(
-                f"Model summary for {evidence_id} introduced unsupported numbers: "
-                f"{', '.join(introduced_numbers)}"
-            )
         summaries[evidence_id] = summary
+        if require_analysis:
+            analysis = re.sub(r"\s+", " ", str(entry.get("analysis", ""))).strip()
+            _validate_model_text(
+                evidence_id=evidence_id,
+                field_name="analysis",
+                value=analysis,
+                evidence_item=evidence_item,
+                max_chars=1000,
+                extra_number_context=pack_number_context,
+            )
+            analyses[evidence_id] = analysis
 
     missing_ids = sorted(allowed_ids - summaries.keys())
     if missing_ids:
         raise ValueError(f"Model omitted evidence IDs: {', '.join(missing_ids)}")
-    return summaries
+    return summaries, analyses
 
 
 def parse_model_summaries(text: str, pack: EvidencePack) -> Dict[str, str]:
     payload = _extract_model_payload(text)
     if set(payload.keys()) != {"summaries"}:
         raise ValueError("Model output must contain only the summaries key.")
-    return _parse_summary_entries(payload.get("summaries"), pack)
+    summaries, _ = _parse_summary_entries(payload.get("summaries"), pack)
+    return summaries
 
 
 def parse_model_brief(
@@ -372,7 +432,11 @@ def parse_model_brief(
     if set(payload.keys()) != {"summaries", "portfolio_actions"}:
         raise ValueError("Model output must contain only summaries and portfolio_actions.")
 
-    summaries = _parse_summary_entries(payload.get("summaries"), pack)
+    summaries, analyses = _parse_summary_entries(
+        payload.get("summaries"),
+        pack,
+        require_analysis=True,
+    )
     action_entries = payload.get("portfolio_actions")
     if not isinstance(action_entries, list):
         raise ValueError("Model output must contain a portfolio_actions list.")
@@ -477,7 +541,7 @@ def parse_model_brief(
     missing_tickers = sorted(expected_tickers - seen_tickers)
     if missing_tickers:
         raise ValueError(f"Model omitted holding tickers: {', '.join(missing_tickers)}")
-    return ModelBrief(summaries=summaries, portfolio_actions=actions)
+    return ModelBrief(summaries=summaries, analyses=analyses, portfolio_actions=actions)
 
 
 def _item_matches_holdings(item: EvidenceItem, holding_tickers: set[str]) -> bool:
@@ -497,29 +561,46 @@ def _display_datetime(value: str, timezone_name: str) -> str:
         return value
 
 
+def _display_datetime_readable(value: str, timezone_name: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None or ZoneInfo is None:
+        return value
+    try:
+        return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return value
+
+
 def _append_information_item(
     parts: List[str],
     item: EvidenceItem,
     summaries: Mapping[str, str],
+    analyses: Mapping[str, str],
     *,
     heading_level: int,
     timezone_name: str,
 ) -> None:
     parts.extend([f"{'#' * heading_level} {item.id} · {item.title}", ""])
     summary = summaries.get(item.id)
+    analysis = analyses.get(item.id)
     if summary:
         parts.append(f"- **摘要：** {summary}")
+        if analysis:
+            parts.append(f"- **解读：** {analysis}")
     else:
         parts.append(
-            f"- **状态：** {item.evidence_level} 级证据，仅展示可靠来源标题或元数据；"
-            "需打开原文核验，未纳入持仓操作分析。"
+            "- **解读：** 这条信息目前只采集到标题或提交元数据，适合先打开原文核验，"
+            "不直接用于持仓操作判断。"
         )
     if item.matched_tickers:
         parts.append(f"- **相关代码：** {', '.join(item.matched_tickers)}")
     parts.extend(
         [
-            f"- **来源：** [{item.source_name}]({item.url}) · {item.source_type}",
-            f"- **发布时间：** {_display_datetime(item.published_at, timezone_name)}",
+            f"- **来源链接：** [{item.source_name} 原文]({item.url})",
+            f"- **时间：** {_display_datetime_readable(item.published_at, timezone_name)}",
             "",
         ]
     )
@@ -531,7 +612,10 @@ def _table_cell(value: str) -> str:
 
 def _window_description(pack: EvidencePack) -> str:
     if pack.window_start and pack.window_end:
-        return f"{pack.window_start} 至 {pack.window_end}（{pack.window_mode}）"
+        return (
+            f"{_display_datetime_readable(pack.window_start, pack.timezone)} 至 "
+            f"{_display_datetime_readable(pack.window_end, pack.timezone)}"
+        )
     return f"最近 {pack.lookback_hours} 小时"
 
 
@@ -545,6 +629,7 @@ def _append_information_group(
     heading: str,
     items: Sequence[EvidenceItem],
     summaries: Mapping[str, str],
+    analyses: Mapping[str, str],
     timezone_name: str,
     empty_message: str,
     compact_title_only: bool = False,
@@ -560,6 +645,7 @@ def _append_information_group(
             parts,
             item,
             summaries,
+            analyses,
             heading_level=4,
             timezone_name=timezone_name,
         )
@@ -584,7 +670,8 @@ def _append_information_group(
             for item in topic_items:
                 parts.append(
                     f"- [{item.id} · {item.title}]({item.url}) · "
-                    f"{_display_datetime(item.published_at, timezone_name)}"
+                    f"{_display_datetime_readable(item.published_at, timezone_name)} · "
+                    "仅有标题，需打开原文核验具体影响。"
                 )
             parts.append("")
 
@@ -603,6 +690,7 @@ def _coverage_status_label(status: str) -> str:
 def model_summary_brief_markdown(
     pack: EvidencePack,
     summaries: Mapping[str, str],
+    analyses: Mapping[str, str],
     run_date: date,
     *,
     holdings: Sequence[Mapping[str, Any]] = (),
@@ -625,10 +713,7 @@ def model_summary_brief_markdown(
         f"# 每日研究简报 - {run_date.isoformat()}",
         "",
         f"- **信息窗口：** {_window_description(pack)}",
-        f"- **采集结果：** 共 {len(pack.items)} 条可靠来源证据，其中 "
-        f"{len(summary_items)} 条具备正文摘要，可用于持仓操作分析。",
-        "- **范围说明：** “全部信息”指配置的可靠信源在上述窗口内成功采集到的全部相关条目；"
-        "采集器未捕获不代表事件没有发生。",
+        "- **阅读说明：** 每条信息均附原始链接；完整采集覆盖和来源日志已单独保存。",
         "",
         "## 1. 市场总体资讯（可靠信源）",
         "",
@@ -638,6 +723,7 @@ def model_summary_brief_markdown(
         heading="A股市场整体与重点方向",
         items=a_share_market_items,
         summaries=summaries,
+        analyses=analyses,
         timezone_name=pack.timezone,
         empty_message="本窗口内，已启用信源未采集到A股整体或重点方向条目；这不代表市场没有发生事件。",
         compact_title_only=True,
@@ -647,6 +733,7 @@ def model_summary_brief_markdown(
         heading="美股市场整体与宏观驱动",
         items=us_market_items,
         summaries=summaries,
+        analyses=analyses,
         timezone_name=pack.timezone,
         empty_message="本窗口内，已启用信源未采集到美股整体或宏观驱动条目；这不代表市场没有发生事件。",
     )
@@ -674,6 +761,7 @@ def model_summary_brief_markdown(
                 parts,
                 item,
                 summaries,
+                analyses,
                 heading_level=4,
                 timezone_name=pack.timezone,
             )
@@ -712,34 +800,63 @@ def model_summary_brief_markdown(
             f"{evidence_links} | {_table_cell(action.watch_for)} |"
         )
 
-    parts.extend(
-        [
-            "",
-            "## 附录：采集覆盖与来源日志",
-            "",
-            f"- 证据等级：summary {level_counts.get('summary', 0)}；"
-            f"metadata_only {level_counts.get('metadata_only', 0)}；"
-            f"title_only {level_counts.get('title_only', 0)}。",
-            "- 操作分析只使用 summary 级证据并引用 evidence ID；标题级和元数据级证据仅展示待核验。",
-            "- 未被采集器捕获不代表事件没有发生；本简报不据此判断市场或持仓处于静默状态。",
-        ]
-    )
+    return "\n".join(parts).strip() + "\n"
+
+
+def _source_type_label(source_type: str) -> str:
+    return {
+        "primary": "官方/法定来源",
+        "reputable_reporting": "可靠报道",
+        "market_data_aggregator": "行情数据",
+        "news_aggregator": "新闻聚合",
+    }.get(source_type, source_type)
+
+
+def _evidence_level_label(level: str) -> str:
+    return {
+        "summary": "可摘要",
+        "metadata_only": "仅元数据",
+        "title_only": "仅标题",
+    }.get(level, level)
+
+
+def source_log_markdown(pack: EvidencePack) -> str:
+    level_counts: Dict[str, int] = {}
+    for item in pack.items:
+        level_counts[item.evidence_level] = level_counts.get(item.evidence_level, 0) + 1
+
+    parts = [
+        "# 简报采集日志",
+        "",
+        f"- **信息窗口：** {_window_description(pack)}",
+        f"- **证据总数：** {len(pack.items)} 条",
+        (
+            "- **证据类型：** "
+            f"可摘要 {level_counts.get('summary', 0)}；"
+            f"仅元数据 {level_counts.get('metadata_only', 0)}；"
+            f"仅标题 {level_counts.get('title_only', 0)}。"
+        ),
+        "- **说明：** 仅标题和仅元数据条目只用于展示与复核，不用于持仓操作分析。",
+    ]
     if pack.errors:
-        parts.append("- 采集告警：" + "；".join(pack.errors))
+        parts.append("- **采集告警：** " + "；".join(pack.errors))
+
     if pack.coverage:
-        parts.extend(["", "### 采集器覆盖状态", ""])
+        parts.extend(["", "## 采集覆盖", ""])
         for entry in pack.coverage:
             detail = f"；{entry.detail}" if entry.detail else ""
             parts.append(
-                f"- **{entry.name}**（{entry.category}）："
-                f"{_coverage_status_label(entry.status)}，{entry.item_count} 条{detail}"
+                f"- **{entry.name}**：{_coverage_status_label(entry.status)}，"
+                f"{entry.item_count} 条{detail}"
             )
 
-    parts.extend(["", "### 来源日志", ""])
+    parts.extend(["", "## 来源明细", ""])
     for item in pack.items:
+        tickers = f"；相关代码：{', '.join(item.matched_tickers)}" if item.matched_tickers else ""
         parts.append(
-            f"- [{item.id} · {item.source_name}]({item.url}) · "
-            f"{item.evidence_level} · {_display_datetime(item.published_at, pack.timezone)}"
+            f"- [{item.id} · {item.title}]({item.url}) · "
+            f"{_source_type_label(item.source_type)} · {_evidence_level_label(item.evidence_level)} · "
+            f"{_display_datetime_readable(item.published_at, pack.timezone)}{tickers}"
         )
     return "\n".join(parts).strip() + "\n"
 
@@ -764,6 +881,7 @@ def evidence_only_brief_markdown(
     ]
     return model_summary_brief_markdown(
         pack,
+        {},
         {},
         run_date,
         holdings=holdings,

@@ -25,12 +25,13 @@ from .evidence import (
     model_summary_brief_markdown,
     new_evidence_pack,
     parse_model_brief,
+    source_log_markdown,
     validate_summary_citations,
 )
 from .html_renderer import render_html_document
 from .openai_runner import OpenAIError, run_openai
 from .prompting import build_codex_task_prompt, build_openai_messages
-from .writer import output_path_for, run_stamp, runs_dir_for, write_json, write_text
+from .writer import output_path_for, run_stamp, runs_dir_for, source_log_path_for, write_json, write_text
 from .zhipu_runner import ZhipuError, run_zhipu
 
 
@@ -94,11 +95,15 @@ def write_model_brief(
     brief_text = model_summary_brief_markdown(
         pack,
         model_brief.summaries,
+        model_brief.analyses,
         run_date,
         holdings=holdings,
         portfolio_actions=model_brief.portfolio_actions,
     )
     write_text(runs_dir / f"{stamp}-brief-source.md", brief_text)
+    source_log_path = source_log_path_for(output_path)
+    write_text(runs_dir / f"{stamp}-source-log.md", source_log_markdown(pack))
+    write_text(source_log_path, source_log_markdown(pack))
     validation_errors = validate_summary_citations(brief_text, pack)
     if validation_errors:
         write_json(runs_dir / f"{stamp}-validation-errors.json", validation_errors)
@@ -112,6 +117,7 @@ def write_model_brief(
     else:
         write_text(output_path, brief_text)
     print(f"Brief written: {output_path}")
+    print(f"Source log written: {source_log_path}")
     return 0
 
 
@@ -155,6 +161,9 @@ def command_run(args: argparse.Namespace) -> int:
     if backend != "dry-run" and not model_pack.items:
         brief_text = evidence_only_brief_markdown(pack, run_date, holdings=holdings)
         write_text(runs_dir / f"{stamp}-brief-source.md", brief_text)
+        source_log_path = source_log_path_for(output_path)
+        write_text(runs_dir / f"{stamp}-source-log.md", source_log_markdown(pack))
+        write_text(source_log_path, source_log_markdown(pack))
         validation_errors = validate_summary_citations(brief_text, pack)
         if validation_errors:
             write_json(runs_dir / f"{stamp}-validation-errors.json", validation_errors)
@@ -165,6 +174,7 @@ def command_run(args: argparse.Namespace) -> int:
         else:
             write_text(output_path, brief_text)
         print(f"Brief written without model inference: {output_path}")
+        print(f"Source log written: {source_log_path}")
         return 0
 
     if backend != "dry-run":
@@ -281,7 +291,11 @@ def command_run(args: argparse.Namespace) -> int:
             write_json(runs_dir / f"{stamp}-validation-errors.json", validation_errors)
             print("Codex brief failed evidence citation validation.", file=sys.stderr)
             return 2
+        source_log_path = source_log_path_for(output_path)
+        write_text(runs_dir / f"{stamp}-source-log.md", source_log_markdown(pack))
+        write_text(source_log_path, source_log_markdown(pack))
         print(f"Codex run complete. Expected brief path: {output_path}")
+        print(f"Source log written: {source_log_path}")
         print(f"Last message: {last_message_path}")
         return 0
 

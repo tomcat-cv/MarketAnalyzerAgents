@@ -100,7 +100,7 @@ GLM 返回 evidence_id 摘要 + 每个持仓的受控操作判断 JSON
         ↓
 本地校验 ID、拼装来源链接与复核队列
         ↓
-按A股市场、美股市场、持仓资讯与操作分析拼装 HTML 简报
+按A股市场、美股市场、持仓资讯与操作分析拼装简报，并单独输出采集日志
 ```
 
 模型 runner 中没有 `web_search` 或其他联网工具接口。真正会被程序访问的
@@ -108,7 +108,7 @@ GLM 返回 evidence_id 摘要 + 每个持仓的受控操作判断 JSON
 
 当前默认启用：
 
-- Yahoo Finance 日线行情快照：补足A股/美股大盘和半导体方向的实际涨跌，定位为补充行情聚合源，不替代官方披露
+- Yahoo Finance 行情快照：补足A股/美股大盘、半导体方向，以及已配置美股持仓的窗口期涨跌和最新价；链接指向本次 chart API 数据，定位为补充行情聚合源，不替代官方披露
 - SEC EDGAR submissions API + filing 正文：按 `portfolios.us_equities.holdings` 查找最新 filings，正文成功获取时可进入摘要与操作分析
 - Federal Reserve、BLS、EIA 官方 RSS
 - NVIDIA、Marvell、Bloom Energy 官方公告/投资者关系 RSS
@@ -133,9 +133,9 @@ GLM 返回 evidence_id 摘要 + 每个持仓的受控操作判断 JSON
 标题或元数据仍会归入市场/持仓资讯章节，但不会参与操作分析。如果本期只有标题
 或元数据，程序会直接生成带“观察”结论的待核验简报，不调用大模型。
 
-GLM/OpenAI 不直接写完整简报，只返回每条 `summary` 证据的结构化压缩摘要，以及
-每个配置持仓的 `加仓/减仓/持有/观察` 判断。本地代码验证 evidence ID、持仓代码、
-操作枚举和数字依据后，确定性地拼装以下三类内容：
+GLM/OpenAI 不直接写完整简报，只返回每条 `summary` 证据的结构化压缩摘要、阅读友好
+解读，以及每个配置持仓的 `加仓/减仓/持有/观察` 判断。本地代码验证 evidence ID、
+持仓代码、操作枚举和数字依据后，确定性地拼装以下三类内容：
 
 1. 市场总体资讯（可靠信源），内部再分A股整体/重点方向与美股整体/宏观驱动
 2. 持仓公司相关资讯（可靠信源）
@@ -175,10 +175,16 @@ Evidence Pack 会保留每条证据的标题、时间、来源类型、原始 UR
 
 A股持仓可以保持空数组；美股持仓会同时进入 SEC/Finnhub 公司级查询和操作分析。
 
-输出会写到：
+简报输出会写到：
 
 ```text
 briefs/YYYY-MM-DD-brief.html
+```
+
+采集覆盖、证据等级和来源明细会单独写到同目录：
+
+```text
+briefs/YYYY-MM-DD-brief-source-log.md
 ```
 
 如果你想临时输出 Markdown：
