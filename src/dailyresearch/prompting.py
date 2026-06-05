@@ -8,6 +8,22 @@ from typing import Any, Mapping
 from .evidence import configured_holdings
 
 
+def configured_guidance(settings: Mapping[str, Any], inputs: Mapping[str, Any]) -> str:
+    sections = []
+    if str(inputs.get("context", "")).strip():
+        sections.append(("Research context and output preferences", str(inputs["context"]).strip()))
+    if str(inputs.get("feedback", "")).strip():
+        sections.append(("Prior feedback", str(inputs["feedback"]).strip()))
+    if str(inputs.get("prompt_extra", "")).strip():
+        sections.append(("Additional configured prompt instructions", str(inputs["prompt_extra"]).strip()))
+    if not sections:
+        return ""
+
+    max_chars = int(settings.get("prompt", {}).get("max_extra_instruction_chars", 6000))
+    content = "\n\n".join(f"## {title}\n{body}" for title, body in sections)
+    return content[:max_chars].strip()
+
+
 def build_openai_messages(
     *,
     settings: Mapping[str, Any],
@@ -19,6 +35,14 @@ def build_openai_messages(
 ) -> tuple[str, str]:
     holdings = configured_holdings(inputs.get("sources", {}))
     holdings_json = json.dumps(holdings, ensure_ascii=False, indent=2)
+    guidance = configured_guidance(settings, inputs)
+    guidance_block = (
+        "\nConfigured guidance below may shape priorities, style, and risk framing only. "
+        "It is not factual evidence and must not support factual claims or portfolio actions.\n\n"
+        f"{guidance}\n"
+        if guidance
+        else ""
+    )
     system = f"""You are a strict evidence-grounded market research analyst.
 
 Work in {settings.get("language", "zh-CN")} and perform exactly three tasks:
@@ -39,6 +63,7 @@ identifies what to analyze; it is not factual evidence. When evidence is insuffi
 collectors did not capture it. Say "配置的可靠信源未采集到相关条目", never "窗口内无事件".
 Do not give position sizes, price targets, or personalized advice.
 Return JSON only. Do not return Markdown, URLs, citations, commentary, or extra keys.
+{guidance_block}
 """
 
     user = f"""Run date: {run_date.isoformat()}
@@ -72,6 +97,9 @@ Requirements:
   beyond the supplied title, Evidence field, and verified Published timestamp.
 - Analysis entries may explain implications and caveats. If comparing with another supplied
   evidence item, name its evidence ID. Do not invent missing table fields or unstated causes.
+- Do not calculate new averages, ratios, percentage changes, ownership reduction percentages,
+  or unit conversions unless that exact number already appears in the supplied evidence.
+  Use qualitative wording instead, such as "规模较大" or "接近窗口高点".
 - For SEC Form 4 items, translate table fields into plain Chinese when present, especially
   acquired/disposed, shares, price per share, transaction date, and post-transaction holdings.
 - Return exactly one portfolio action for every configured holding and no others.
@@ -109,6 +137,13 @@ def build_codex_task_prompt(
 ) -> str:
     holdings = configured_holdings(inputs.get("sources", {}))
     holdings_json = json.dumps(holdings, ensure_ascii=False, indent=2)
+    guidance = configured_guidance(settings, inputs)
+    guidance_block = (
+        "\nConfigured guidance (style/priorities only; not factual evidence):\n"
+        f"{guidance}\n"
+        if guidance
+        else ""
+    )
     return f"""You are Codex running the Daily Research Agent in this repository.
 
 Goal: create today's daily research brief and save it to:
@@ -133,12 +168,15 @@ Hard constraints:
 - Treat Yahoo Finance market-data snapshots as price context; price-only movement without
   company, filing, official, macro, or reputable-reporting evidence is not enough for 加仓/减仓
   or for 中/高 confidence.
+- Do not calculate new averages, ratios, percentage changes, ownership reduction percentages,
+  or unit conversions unless that exact number already appears in the supplied evidence.
 - Do not give position sizes, price targets, or personalized advice.
 - Include each evidence item's exact source link.
 - Write the final brief in {settings.get("language", "zh-CN")}.
 - Output format: {output_format}. If html, write a standalone HTML file with polished
   readable styling and source links.
 - Create parent directories if needed.
+{guidance_block}
 
 Run metadata:
 - Date: {run_date.isoformat()}

@@ -109,6 +109,8 @@ def _normalized_numbers(value: str) -> set[str]:
             rounded = decimal_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             normalized.add(format(rounded.normalize(), "f") + suffix)
         if suffix and decimal_part:
+            rounded_percent_tenth = decimal_value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            normalized.add(format(rounded_percent_tenth.normalize(), "f") + suffix)
             rounded_percent = decimal_value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
             normalized.add(format(rounded_percent.normalize(), "f") + suffix)
         if not suffix and abs(decimal_value) >= Decimal("10000"):

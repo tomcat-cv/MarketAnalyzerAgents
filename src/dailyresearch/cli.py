@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time as time_module
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -31,6 +32,7 @@ from .evidence import (
 from .html_renderer import render_html_document
 from .openai_runner import OpenAIError, run_openai
 from .prompting import build_codex_task_prompt, build_openai_messages
+from .scheduler import ScheduleError, local_now, next_run_at, seconds_until
 from .writer import output_path_for, run_stamp, runs_dir_for, source_log_path_for, write_json, write_text
 from .zhipu_runner import ZhipuError, run_zhipu
 
@@ -341,6 +343,7 @@ def command_doctor(_: argparse.Namespace) -> int:
     print(f"Context file: {inputs['paths']['context']}")
     print(f"Sources file: {inputs['paths']['sources']}")
     print(f"Feedback file: {inputs['paths']['feedback']}")
+    print(f"Prompt overrides file: {inputs['paths']['prompt_extra']}")
     window_start, window_end, window_mode = resolve_research_window(settings)
     local_tz = ZoneInfo(str(settings.get("timezone", "Asia/Shanghai"))) if ZoneInfo else None
     if local_tz:
@@ -356,6 +359,14 @@ def command_doctor(_: argparse.Namespace) -> int:
     )
     print(f"Runs dir: {runs_dir}")
     print(f"Next brief path: {output_path}")
+    schedule = settings.get("schedule", {})
+    print(
+        "Schedule: "
+        f"mode={schedule.get('mode', 'daily')}, "
+        f"time={schedule.get('time', '06:00')}, "
+        f"interval_minutes={schedule.get('interval_minutes', 1440)}, "
+        f"run_on_start={schedule.get('run_on_start', False)}"
+    )
     return 0
 
 
@@ -408,6 +419,53 @@ def command_feedback(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_once_from_schedule(args: argparse.Namespace) -> int:
+    run_args = argparse.Namespace(
+        backend=args.backend,
+        date=args.date,
+        output=args.output,
+        format=args.format,
+        model=args.model,
+    )
+    return command_run(run_args)
+
+
+def command_schedule(args: argparse.Namespace) -> int:
+    root = find_project_root()
+    load_dotenv(root / ".env")
+    settings = load_settings(root)
+    if args.once:
+        return _run_once_from_schedule(args)
+
+    schedule = settings.get("schedule", {})
+    if args.run_on_start or bool(schedule.get("run_on_start", False)):
+        exit_code = _run_once_from_schedule(args)
+        if exit_code != 0:
+            print(f"Scheduled startup run failed with exit code {exit_code}.", file=sys.stderr)
+
+    print("Scheduler started. Press Ctrl+C to stop.", flush=True)
+    while True:
+        try:
+            settings = load_settings(root)
+            now = local_now(str(settings.get("timezone", "Asia/Shanghai")))
+            target = next_run_at(now, settings)
+            wait_seconds = seconds_until(target, now)
+        except ScheduleError as exc:
+            print(f"Invalid schedule configuration: {exc}", file=sys.stderr)
+            return 2
+
+        print(f"Next scheduled run: {target.isoformat(timespec='seconds')}", flush=True)
+        try:
+            time_module.sleep(wait_seconds)
+        except KeyboardInterrupt:
+            print("Scheduler stopped.")
+            return 130
+
+        exit_code = _run_once_from_schedule(args)
+        if exit_code != 0:
+            print(f"Scheduled run failed with exit code {exit_code}.", file=sys.stderr)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dailyresearch",
@@ -436,6 +494,16 @@ def build_parser() -> argparse.ArgumentParser:
     feedback_parser.add_argument("--dislike", action="append", help="Negative preference to remember.")
     feedback_parser.add_argument("--correction", action="append", help="Correction to remember.")
     feedback_parser.set_defaults(func=command_feedback)
+
+    schedule_parser = subparsers.add_parser("schedule", help="Run briefs on the configured schedule.")
+    add_common_run_args(schedule_parser)
+    schedule_parser.add_argument(
+        "--run-on-start",
+        action="store_true",
+        help="Run once immediately before waiting for the next configured schedule.",
+    )
+    schedule_parser.add_argument("--once", action="store_true", help="Run once through the scheduler entrypoint.")
+    schedule_parser.set_defaults(func=command_schedule)
 
     return parser
 

@@ -55,4 +55,4 @@ def write_json(path: Path, payload: Any) -> Path:
 
 
 def run_stamp() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    return datetime.now().strftime("%Y%m%d-%H%M%S-%f")

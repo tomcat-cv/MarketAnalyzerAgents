@@ -8,6 +8,7 @@
 .
 ├── AGENTS.md                       # Codex 项目规则
 ├── config/
+│   ├── prompt-overrides.md         # 部署时可调整的额外提示词偏好
 │   ├── research-context.md         # 研究目标、偏好、过滤规则
 │   ├── settings.json               # 后端、模型、路径、时区等配置
 │   └── sources.json                # 信源采集器与持仓配置
@@ -27,9 +28,12 @@
 │   ├── openai_runner.py            # OpenAI Responses API 后端
 │   ├── codex_runner.py             # codex exec 后端
 │   ├── html_renderer.py            # Markdown → HTML 渲染
+│   ├── scheduler.py                # 服务器/容器内的轻量定时循环
 │   ├── config.py                   # 配置加载与合并
 │   ├── env.py                      # .env 加载
 │   └── writer.py                   # 输出与运行日志
+├── Dockerfile                      # 容器化部署入口
+├── docker-compose.example.yml      # Docker Compose 示例
 └── tests/
 ```
 
@@ -48,6 +52,9 @@ PYTHONPATH=src python3 -m dailyresearch run --backend dry-run
 
 # 生成简报
 PYTHONPATH=src python3 -m dailyresearch run --backend zhipu
+
+# 按配置定时生成简报
+PYTHONPATH=src python3 -m dailyresearch schedule
 ```
 
 `.env` 至少需要：
@@ -79,11 +86,48 @@ PYTHONPATH=src python3 -m dailyresearch collect
 # 把 Markdown 简报渲染成 HTML
 PYTHONPATH=src python3 -m dailyresearch render briefs/2026-05-29-brief.md
 
+# 按配置定时运行。默认读取 config/settings.json 的 schedule 段
+PYTHONPATH=src python3 -m dailyresearch schedule
+
+# 通过调度入口立即跑一次，适合验证容器命令
+PYTHONPATH=src python3 -m dailyresearch schedule --once --backend dry-run
+
 # 追加反馈
 PYTHONPATH=src python3 -m dailyresearch feedback \
   --like “多给我一级来源链接” \
   --dislike “不要泛泛总结融资新闻”
 ```
+
+## 调度与提示词配置
+
+定时频率在 `config/settings.json` 的 `schedule` 段配置：
+
+```json
+{
+  "schedule": {
+    "mode": "daily",
+    "time": "06:00",
+    "interval_minutes": 1440,
+    "run_on_start": false
+  }
+}
+```
+
+- `mode=daily`：每天在 `time` 指定的本地时间运行一次。
+- `mode=interval`：按 `interval_minutes` 间隔循环运行。
+- `run_on_start=true`：服务启动后立即跑一次，然后等待下一次计划时间。
+
+部署时也可以用环境变量覆盖：
+
+```bash
+DAILYRESEARCH_SCHEDULE_MODE=interval
+DAILYRESEARCH_INTERVAL_MINUTES=360
+DAILYRESEARCH_RUN_ON_START=true
+```
+
+提示词偏好在 `config/research-context.md`、`memory/feedback.md` 和
+`config/prompt-overrides.md` 中配置。它们只影响关注重点、写作风格和风险表述，
+不会作为事实证据使用；事实只能来自 Evidence Pack 中的已采集条目。
 
 ## 简报流程
 
@@ -107,11 +151,15 @@ Verified Evidence Pack（summary / metadata_only / title_only）
 
 ### 证据等级
 
-- `summary`：有正文摘要，交模型归纳
-- `metadata_only`：仅提交元数据，入人工复核队列
-- `title_only`：仅标题，入人工复核队列
+证据分级是为了控制大模型“能用什么、不能用什么”，避免只凭标题或提交记录做过度推断：
+
+- `summary`：有正文摘要、行情快照正文或 filing 正文摘录。会交给模型摘要、解读，并可作为持仓操作判断的依据。
+- `metadata_only`：只有 filing 表单号、提交日期、文档描述等元数据，正文没有成功抓取或正文太短。会展示给读者复核，但不交给模型做操作判断。
+- `title_only`：只有标题，例如巨潮公告标题或没有摘要的 RSS 条目。会展示为复核队列，不交给模型做操作判断。
 
 仅 `summary` 会进入模型请求。如果本期没有 `summary`，程序直接生成待核验简报，不调用模型。
+
+这个分级对当前阶段是合理的：它牺牲了一些覆盖率，换取更低的幻觉和误判风险。后续如果接入可稳定抽取正文的 A股公告、新闻或行情数据源，可以把更多条目升级为 `summary`。
 
 ### 简报结构
 
@@ -170,6 +218,28 @@ python3 -m http.server 8000 --directory briefs
 
 ```bash
 bash scripts/run-daily-brief.sh --backend zhipu
+```
+
+### Docker
+
+容器默认运行 `dailyresearch schedule`，按 `config/settings.json` 或环境变量里的调度配置生成简报。
+
+```bash
+docker build -t dailyresearch .
+docker run --rm --env-file .env \
+  -v "$PWD/config:/app/config:ro" \
+  -v "$PWD/briefs:/app/briefs" \
+  -v "$PWD/runs:/app/runs" \
+  -v "$PWD/memory:/app/memory" \
+  dailyresearch
+```
+
+使用 Compose：
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+docker compose up -d --build
+docker compose logs -f dailyresearch
 ```
 
 ### 静态站点

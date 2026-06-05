@@ -10,8 +10,18 @@
   "context_path": "config/research-context.md",
   "sources_path": "config/sources.json",
   "feedback_path": "memory/feedback.md",
+  "prompt": {
+    "extra_instructions_path": "config/prompt-overrides.md",
+    "max_extra_instruction_chars": 6000
+  },
   "output_dir": "briefs",
   "runs_dir": "runs",
+  "schedule": {
+    "mode": "daily",
+    "time": "06:00",
+    "interval_minutes": 1440,
+    "run_on_start": false
+  },
   "collectors": {
     "user_agent": "dailyresearch/0.1 research@example.com",
     "timeout_seconds": 30,

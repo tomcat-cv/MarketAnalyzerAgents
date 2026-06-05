@@ -12,6 +12,7 @@ class PromptingTests(unittest.TestCase):
             inputs={
                 "context": "AI agents",
                 "feedback": "Prefer links",
+                "prompt_extra": "Use a compact decision table",
                 "sources": {
                     "portfolio": {
                         "holdings": [{"ticker": "NVDA", "company": "NVIDIA", "themes": ["AI"]}]
@@ -28,21 +29,28 @@ class PromptingTests(unittest.TestCase):
         self.assertIn('"NVDA"', user)
         self.assertIn("2026-05-29", user)
         self.assertIn("price-only movement", user)
-        self.assertNotIn("AI agents", user)
+        self.assertIn("Do not calculate new averages", user)
+        self.assertIn("AI agents", system)
+        self.assertIn("Prefer links", system)
+        self.assertIn("Use a compact decision table", system)
+        self.assertIn("not factual evidence", system)
 
     def test_codex_prompt_bans_claude_and_n8n(self) -> None:
         prompt = build_codex_task_prompt(
             settings={"language": "zh-CN", "timezone": "Asia/Shanghai"},
-            inputs={"context": "", "feedback": "", "sources": {}},
+            inputs={"context": "Focus on semiconductors", "feedback": "", "prompt_extra": "", "sources": {}},
             run_date=date(2026, 5, 29),
             output_path=Path("briefs/2026-05-29-brief.md"),
         )
         self.assertIn("Do not use Claude", prompt)
         self.assertIn("Do not use n8n", prompt)
         self.assertIn("price-only movement", prompt)
+        self.assertIn("Do not calculate new averages", prompt)
         self.assertIn("Do not include an appendix", prompt)
         self.assertIn("## 1. 市场总体资讯（可靠信源）", prompt)
         self.assertIn("## 3. 根据市场动态分析持仓应该作何操作", prompt)
+        self.assertIn("Focus on semiconductors", prompt)
+        self.assertIn("not factual evidence", prompt)
 
 
 if __name__ == "__main__":

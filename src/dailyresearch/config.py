@@ -19,8 +19,18 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "context_path": "config/research-context.md",
     "sources_path": "config/sources.json",
     "feedback_path": "memory/feedback.md",
+    "prompt": {
+        "extra_instructions_path": "config/prompt-overrides.md",
+        "max_extra_instruction_chars": 6000,
+    },
     "output_dir": "briefs",
     "runs_dir": "runs",
+    "schedule": {
+        "mode": "daily",
+        "time": "06:00",
+        "interval_minutes": 1440,
+        "run_on_start": False,
+    },
     "obsidian": {"vault_path": "", "note_dir": "Daily Research"},
     "collectors": {
         "user_agent": "dailyresearch/0.1 research@example.com",
@@ -87,6 +97,21 @@ def load_settings(root: Path) -> Dict[str, Any]:
         settings["zhipu"]["api_base"] = os.environ["ZHIPU_API_BASE"]
     if os.environ.get("OBSIDIAN_VAULT_PATH"):
         settings["obsidian"]["vault_path"] = os.environ["OBSIDIAN_VAULT_PATH"]
+    if os.environ.get("DAILYRESEARCH_PROMPT_PATH"):
+        settings["prompt"]["extra_instructions_path"] = os.environ["DAILYRESEARCH_PROMPT_PATH"]
+    if os.environ.get("DAILYRESEARCH_SCHEDULE_MODE"):
+        settings["schedule"]["mode"] = os.environ["DAILYRESEARCH_SCHEDULE_MODE"]
+    if os.environ.get("DAILYRESEARCH_SCHEDULE_TIME"):
+        settings["schedule"]["time"] = os.environ["DAILYRESEARCH_SCHEDULE_TIME"]
+    if os.environ.get("DAILYRESEARCH_INTERVAL_MINUTES"):
+        settings["schedule"]["interval_minutes"] = int(os.environ["DAILYRESEARCH_INTERVAL_MINUTES"])
+    if os.environ.get("DAILYRESEARCH_RUN_ON_START"):
+        settings["schedule"]["run_on_start"] = os.environ["DAILYRESEARCH_RUN_ON_START"].strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     return settings
 
@@ -108,15 +133,22 @@ def read_inputs(root: Path, settings: Mapping[str, Any]) -> Dict[str, Any]:
     context_path = resolve_path(root, settings["context_path"])
     sources_path = resolve_path(root, settings["sources_path"])
     feedback_path = resolve_path(root, settings["feedback_path"])
+    prompt_settings = settings.get("prompt", {})
+    prompt_extra_path = resolve_path(
+        root,
+        str(prompt_settings.get("extra_instructions_path", "config/prompt-overrides.md")),
+    )
 
     return {
         "context": read_optional_text(context_path),
         "sources": load_json(sources_path, {}),
         "feedback": read_optional_text(feedback_path),
+        "prompt_extra": read_optional_text(prompt_extra_path),
         "paths": {
             "context": str(context_path),
             "sources": str(sources_path),
             "feedback": str(feedback_path),
+            "prompt_extra": str(prompt_extra_path),
         },
     }
 

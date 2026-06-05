@@ -165,6 +165,38 @@ class EvidenceTests(unittest.TestCase):
                 pack,
             )
 
+    def test_accepts_one_decimal_percent_rounding_from_evidence(self) -> None:
+        evidence = item("https://official.example/release")
+        evidence.id = "EVID-001"
+        evidence.content = "Window range percent versus window low: 4.38%."
+        pack = EvidencePack(
+            retrieved_at="2026-06-04T08:00:00+00:00",
+            lookback_hours=24,
+            items=[evidence],
+        )
+        result = parse_model_brief(
+            """
+            {
+              "summaries": [{
+                "evidence_id": "EVID-001",
+                "summary": "窗口振幅为4.38%。",
+                "analysis": "约4.4%的振幅显示波动较大。"
+              }],
+              "portfolio_actions": [{
+                "ticker": "NVDA",
+                "action": "观察",
+                "confidence": "低",
+                "rationale": "证据不足。",
+                "evidence_ids": [],
+                "watch_for": "等待可靠来源确认。"
+              }]
+            }
+            """,
+            pack,
+            [{"ticker": "NVDA", "company": "NVIDIA"}],
+        )
+        self.assertEqual(result.analyses["EVID-001"], "约4.4%的振幅显示波动较大。")
+
     def test_parses_grounded_portfolio_actions(self) -> None:
         evidence = item("https://official.example/release")
         evidence.id = "EVID-001"
