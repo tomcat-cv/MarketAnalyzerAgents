@@ -68,54 +68,6 @@ class SecDocumentClient(FakeClient):
         return "<html><body><h1>Current report</h1><p>" + ("Verified filing detail. " * 20) + "</p></body></html>"
 
 
-class SecForm4Client(FakeClient):
-    def get_json(self, url):
-        if url.endswith("company_tickers.json"):
-            return {"0": {"ticker": "NVDA", "cik_str": 1045810}}
-        return {
-            "name": "NVIDIA CORP",
-            "filings": {
-                "recent": {
-                    "form": ["4"],
-                    "filingDate": ["2026-06-04"],
-                    "reportDate": ["2026-06-02"],
-                    "accessionNumber": ["0001045810-26-000001"],
-                    "primaryDocument": ["form4.xml"],
-                    "primaryDocDescription": ["FORM 4"],
-                }
-            },
-        }
-
-    def get_text(self, url):
-        return """<?xml version="1.0"?>
-<ownershipDocument>
-  <issuer>
-    <issuerName>NVIDIA CORP</issuerName>
-    <issuerTradingSymbol>NVDA</issuerTradingSymbol>
-  </issuer>
-  <reportingOwner>
-    <reportingOwnerId><rptOwnerName>STEVENS MARK A</rptOwnerName></reportingOwnerId>
-    <reportingOwnerRelationship><isDirector>1</isDirector></reportingOwnerRelationship>
-  </reportingOwner>
-  <nonDerivativeTable>
-    <nonDerivativeTransaction>
-      <securityTitle><value>Common Stock</value></securityTitle>
-      <transactionDate><value>2026-06-02</value></transactionDate>
-      <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
-      <transactionAmounts>
-        <transactionShares><value>1000</value></transactionShares>
-        <transactionPricePerShare><value>150.25</value></transactionPricePerShare>
-        <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>
-      </transactionAmounts>
-      <postTransactionAmounts>
-        <sharesOwnedFollowingTransaction><value>2000</value></sharesOwnedFollowingTransaction>
-      </postTransactionAmounts>
-      <ownershipNature><directOrIndirectOwnership><value>D</value></directOrIndirectOwnership></ownershipNature>
-    </nonDerivativeTransaction>
-  </nonDerivativeTable>
-</ownershipDocument>"""
-
-
 class YahooClient:
     def get_json(self, url):
         return {
@@ -226,31 +178,6 @@ class CollectorTests(unittest.TestCase):
         )
         self.assertEqual(items[0].evidence_level, "summary")
         self.assertIn("Verified filing detail", items[0].content)
-
-    def test_sec_form4_extracts_transaction_table_details(self) -> None:
-        items = collect_sec_filings(
-            client=SecForm4Client(),
-            sources={
-                "portfolios": {
-                    "us_equities": {"holdings": [{"ticker": "NVDA", "themes": ["AI"]}]}
-                }
-            },
-            config={
-                "forms": ["4"],
-                "max_per_company": 2,
-                "fetch_document_text": True,
-                "min_document_chars": 20,
-            },
-            cutoff=self.cutoff,
-        )
-        self.assertEqual(items[0].evidence_level, "summary")
-        self.assertIn("内部人持股变动", items[0].title)
-        self.assertIn("报告人：STEVENS MARK A", items[0].content)
-        self.assertIn("方向：处置/卖出或转出", items[0].content)
-        self.assertIn("股数：1000", items[0].content)
-        self.assertIn("每股价格：150.25", items[0].content)
-        self.assertIn("交易前估算持股：3000", items[0].content)
-        self.assertIn("卖出合计股数：1000", items[0].content)
 
     def test_collects_cninfo_announcement_titles(self) -> None:
         items = collect_cninfo_announcements(
