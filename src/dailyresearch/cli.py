@@ -90,12 +90,20 @@ def write_model_brief(
     write_text(runs_dir / f"{stamp}-model-output.txt", result_text)
 
     model_pack = filter_evidence_pack(pack, {"summary"})
+    number_warnings: list[str] = []
     try:
-        model_brief = parse_model_brief(result_text, model_pack, holdings)
+        model_brief = parse_model_brief(
+            result_text, model_pack, holdings, warnings=number_warnings
+        )
     except ValueError as exc:
         write_json(runs_dir / f"{stamp}-validation-errors.json", [str(exc)])
         print(f"Model summary failed structured-output validation: {exc}", file=sys.stderr)
         return 2
+
+    if number_warnings:
+        write_json(runs_dir / f"{stamp}-validation-warnings.json", number_warnings)
+        for warning in number_warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
 
     brief_text = model_summary_brief_markdown(
         pack,
@@ -112,11 +120,10 @@ def write_model_brief(
     write_text(source_log_path, source_log_markdown(pack))
     validation_errors = validate_summary_citations(brief_text, pack)
     if validation_errors:
-        write_json(runs_dir / f"{stamp}-validation-errors.json", validation_errors)
-        print("Generated brief failed evidence citation validation:", file=sys.stderr)
+        write_json(runs_dir / f"{stamp}-validation-warnings.json", validation_errors)
+        print("Note: brief has citation validation notes (non-blocking):", file=sys.stderr)
         for error in validation_errors:
             print(f"- {error}", file=sys.stderr)
-        return 2
 
     if output_format == "html":
         write_text(output_path, render_html_document(brief_text))

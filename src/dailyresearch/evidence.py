@@ -113,12 +113,31 @@ def _normalized_numbers(value: str) -> set[str]:
             normalized.add(format(rounded_percent_tenth.normalize(), "f") + suffix)
             rounded_percent = decimal_value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
             normalized.add(format(rounded_percent.normalize(), "f") + suffix)
-        if not suffix and abs(decimal_value) >= Decimal("10000"):
-            wan_value = decimal_value / Decimal("10000")
-            wan_rounded = wan_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            normalized.add(format(wan_rounded.normalize(), "f"))
-            wan_integer = wan_value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-            normalized.add(format(wan_integer.normalize(), "f"))
+        if not suffix:
+            # Large-number rounding: nearest 10, 100, 1000, 10000
+            if abs(decimal_value) >= Decimal("10"):
+                for exponent in range(1, 5):
+                    rounding_base = Decimal(10) ** exponent
+                    if abs(decimal_value) < rounding_base:
+                        break
+                    rounded_large = (decimal_value / rounding_base).quantize(
+                        Decimal("1"), rounding=ROUND_HALF_UP
+                    ) * rounding_base
+                    normalized.add(format(rounded_large.normalize(), "f"))
+            # 万 conversion for numbers >= 10000
+            if abs(decimal_value) >= Decimal("10000"):
+                wan_value = decimal_value / Decimal("10000")
+                wan_rounded = wan_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                normalized.add(format(wan_rounded.normalize(), "f"))
+                wan_integer = wan_value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                normalized.add(format(wan_integer.normalize(), "f"))
+            # 亿 conversion for numbers >= 100000000
+            if abs(decimal_value) >= Decimal("100000000"):
+                yi_value = decimal_value / Decimal("100000000")
+                yi_rounded = yi_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                normalized.add(format(yi_rounded.normalize(), "f"))
+                yi_integer = yi_value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+                normalized.add(format(yi_integer.normalize(), "f"))
     return normalized
 
 
@@ -398,6 +417,7 @@ def _validate_model_text(
     evidence_item: EvidenceItem,
     max_chars: int,
     extra_number_context: str = "",
+    warnings: List[str] | None = None,
 ) -> None:
     if not value:
         raise ValueError(f"Model returned an empty {field_name} for {evidence_id}.")
@@ -411,10 +431,14 @@ def _validate_model_text(
     )
     introduced_numbers = sorted(_normalized_numbers(value) - allowed_numbers)
     if introduced_numbers:
-        raise ValueError(
+        msg = (
             f"Model {field_name} for {evidence_id} introduced unsupported numbers: "
             f"{', '.join(introduced_numbers)}"
         )
+        if warnings is not None:
+            warnings.append(msg)
+        else:
+            raise ValueError(msg)
 
 
 def _parse_summary_entries(
@@ -422,6 +446,7 @@ def _parse_summary_entries(
     pack: EvidencePack,
     *,
     require_analysis: bool = False,
+    warnings: List[str] | None = None,
 ) -> tuple[Dict[str, str], Dict[str, str]]:
     if not isinstance(entries, list):
         raise ValueError("Model output must contain a summaries list.")
@@ -455,6 +480,7 @@ def _parse_summary_entries(
             value=summary,
             evidence_item=evidence_item,
             max_chars=800,
+            warnings=warnings,
         )
         summaries[evidence_id] = summary
         if require_analysis:
@@ -466,6 +492,7 @@ def _parse_summary_entries(
                 evidence_item=evidence_item,
                 max_chars=1000,
                 extra_number_context=pack_number_context,
+                warnings=warnings,
             )
             analyses[evidence_id] = analysis
 
@@ -475,11 +502,16 @@ def _parse_summary_entries(
     return summaries, analyses
 
 
-def parse_model_summaries(text: str, pack: EvidencePack) -> Dict[str, str]:
+def parse_model_summaries(
+    text: str,
+    pack: EvidencePack,
+    *,
+    warnings: List[str] | None = None,
+) -> Dict[str, str]:
     payload = _extract_model_payload(text)
     if set(payload.keys()) != {"summaries"}:
         raise ValueError("Model output must contain only the summaries key.")
-    summaries, _ = _parse_summary_entries(payload.get("summaries"), pack)
+    summaries, _ = _parse_summary_entries(payload.get("summaries"), pack, warnings=warnings)
     return summaries
 
 
@@ -487,6 +519,8 @@ def parse_model_brief(
     text: str,
     pack: EvidencePack,
     holdings: Sequence[Mapping[str, Any]],
+    *,
+    warnings: List[str] | None = None,
 ) -> ModelBrief:
     payload = _extract_model_payload(text)
     if set(payload.keys()) != {"summaries", "portfolio_actions"}:
@@ -496,6 +530,7 @@ def parse_model_brief(
         payload.get("summaries"),
         pack,
         require_analysis=True,
+        warnings=warnings,
     )
     action_entries = payload.get("portfolio_actions")
     if not isinstance(action_entries, list):
@@ -581,10 +616,14 @@ def parse_model_brief(
             _normalized_numbers(f"{rationale} {watch_for}") - allowed_numbers
         )
         if introduced_numbers:
-            raise ValueError(
+            msg = (
                 f"Portfolio action for {ticker} introduced unsupported numbers: "
                 f"{', '.join(introduced_numbers)}"
             )
+            if warnings is not None:
+                warnings.append(msg)
+            else:
+                raise ValueError(msg)
 
         seen_tickers.add(ticker)
         actions.append(

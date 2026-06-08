@@ -7,6 +7,7 @@ from dailyresearch.evidence import (
     EvidencePack,
     PortfolioAction,
     SourceCoverage,
+    _normalized_numbers,
     configured_a_share_holdings,
     configured_holdings,
     dedupe_evidence,
@@ -374,6 +375,213 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("## 采集覆盖", source_log)
         self.assertIn("SEC EDGAR", source_log)
         self.assertIn("已查询，本窗口无条目", source_log)
+
+
+class NormalizedNumbersTests(unittest.TestCase):
+    """Tests for _normalized_numbers covering large-number rounding and unit conversions."""
+
+    def test_large_number_rounding_to_nearest_ten(self) -> None:
+        nums = _normalized_numbers("价格 4342.6001")
+        self.assertIn("4340", nums)
+
+    def test_large_number_rounding_to_nearest_hundred(self) -> None:
+        nums = _normalized_numbers("价格 4342.6001")
+        self.assertIn("4300", nums)
+
+    def test_large_number_rounding_to_nearest_thousand(self) -> None:
+        nums = _normalized_numbers("指数 4027.7361")
+        self.assertIn("4000", nums)
+
+    def test_wan_conversion(self) -> None:
+        nums = _normalized_numbers("合计 307500 股")
+        self.assertIn("30.75", nums)  # 307500 / 10000 = 30.75
+        self.assertIn("31", nums)     # 307500 / 10000 rounded to int
+
+    def test_yi_conversion(self) -> None:
+        nums = _normalized_numbers("总金额 221102600 美元")
+        self.assertIn("2.21", nums)   # 221102600 / 100000000 = 2.211026 → 2.21
+        self.assertIn("2", nums)      # rounded to int
+
+    def test_small_number_no_large_rounding(self) -> None:
+        nums = _normalized_numbers("价格 2.0290")
+        # Should not produce 0 from rounding 2.0290 / 10 = 0.2 → 0 * 10 = 0
+        # Because 2.0290 < 10, the rounding loop never starts
+        self.assertNotIn("0", nums)
+        self.assertIn("2.03", nums)   # rounded to 2 decimal places
+
+
+class NumberWarningTests(unittest.TestCase):
+    """Tests that number validation produces warnings instead of errors when warnings list is provided."""
+
+    def _gold_evidence(self) -> EvidenceItem:
+        evidence = EvidenceItem(
+            id="EVID-001",
+            title="COMEX Gold Futures：最新价 4342.6001 USD",
+            published_at="2026-06-08T02:10:02+00:00",
+            source_name="Yahoo Finance",
+            source_type="market_data_aggregator",
+            url="https://query1.finance.yahoo.com/v8/finance/chart/GC%3DF",
+            content=(
+                "Yahoo Finance price snapshot for COMEX Gold Futures (GC=F). "
+                "Latest available price: 4342.6001 USD."
+            ),
+        )
+        return evidence
+
+    def test_large_number_rounding_accepted_in_analysis(self) -> None:
+        evidence = self._gold_evidence()
+        pack = EvidencePack(
+            retrieved_at="2026-06-08T02:20:00+00:00",
+            lookback_hours=24,
+            items=[evidence],
+        )
+        # "4300美元上方" should be accepted via rounding to nearest 100
+        result = parse_model_brief(
+            """
+            {
+              "summaries": [{
+                "evidence_id": "EVID-001",
+                "summary": "COMEX黄金期货最新价4342.60美元。",
+                "analysis": "黄金在4300美元上方窄幅震荡。"
+              }],
+              "portfolio_actions": [{
+                "ticker": "NVDA",
+                "action": "观察",
+                "confidence": "低",
+                "rationale": "证据不足。",
+                "evidence_ids": [],
+                "watch_for": "等待可靠来源确认。"
+              }]
+            }
+            """,
+            pack,
+            [{"ticker": "NVDA", "company": "NVIDIA"}],
+        )
+        self.assertIn("4300", result.analyses["EVID-001"])
+
+    def test_number_warnings_collected_instead_of_raising(self) -> None:
+        evidence = EvidenceItem(
+            id="EVID-001",
+            title="Signal",
+            published_at="2026-06-04T08:00:00+00:00",
+            source_name="Official",
+            source_type="primary",
+            url="https://official.example/release",
+            content="Verified fact with no numbers.",
+        )
+        pack = EvidencePack(
+            retrieved_at="2026-06-04T08:00:00+00:00",
+            lookback_hours=24,
+            items=[evidence],
+        )
+        warnings: list[str] = []
+        # 20% is not in evidence, but with warnings list it should not raise
+        result = parse_model_brief(
+            """
+            {
+              "summaries": [{
+                "evidence_id": "EVID-001",
+                "summary": "增长了20%。",
+                "analysis": "这一增长值得关注。"
+              }],
+              "portfolio_actions": [{
+                "ticker": "NVDA",
+                "action": "观察",
+                "confidence": "低",
+                "rationale": "证据不足。",
+                "evidence_ids": [],
+                "watch_for": "等待可靠来源确认。"
+              }]
+            }
+            """,
+            pack,
+            [{"ticker": "NVDA", "company": "NVIDIA"}],
+            warnings=warnings,
+        )
+        self.assertEqual(result.summaries["EVID-001"], "增长了20%。")
+        self.assertTrue(any("20%" in w for w in warnings))
+
+    def test_structural_errors_still_raise_with_warnings(self) -> None:
+        evidence = EvidenceItem(
+            id="EVID-001",
+            title="Signal",
+            published_at="2026-06-04T08:00:00+00:00",
+            source_name="Official",
+            source_type="primary",
+            url="https://official.example/release",
+            content="Verified fact.",
+        )
+        pack = EvidencePack(
+            retrieved_at="2026-06-04T08:00:00+00:00",
+            lookback_hours=24,
+            items=[evidence],
+        )
+        warnings: list[str] = []
+        # Unknown ID should still raise even with warnings list
+        with self.assertRaises(ValueError):
+            parse_model_brief(
+                """
+                {
+                  "summaries": [{
+                    "evidence_id": "EVID-999",
+                    "summary": "摘要。",
+                    "analysis": "解读。"
+                  }],
+                  "portfolio_actions": [{
+                    "ticker": "NVDA",
+                    "action": "观察",
+                    "confidence": "低",
+                    "rationale": "证据不足。",
+                    "evidence_ids": [],
+                    "watch_for": "等待可靠来源确认。"
+                  }]
+                }
+                """,
+                pack,
+                [{"ticker": "NVDA", "company": "NVIDIA"}],
+                warnings=warnings,
+            )
+
+    def test_portfolio_action_number_warnings(self) -> None:
+        evidence = EvidenceItem(
+            id="EVID-001",
+            title="Signal",
+            published_at="2026-06-04T08:00:00+00:00",
+            source_name="Official",
+            source_type="primary",
+            url="https://official.example/release",
+            content="Verified fact with no numbers.",
+        )
+        pack = EvidencePack(
+            retrieved_at="2026-06-04T08:00:00+00:00",
+            lookback_hours=24,
+            items=[evidence],
+        )
+        warnings: list[str] = []
+        result = parse_model_brief(
+            """
+            {
+              "summaries": [{
+                "evidence_id": "EVID-001",
+                "summary": "经验证的摘要。",
+                "analysis": "这条证据需要关注后续影响。"
+              }],
+              "portfolio_actions": [{
+                "ticker": "NVDA",
+                "action": "观察",
+                "confidence": "低",
+                "rationale": "市值约999万亿元，规模巨大。",
+                "evidence_ids": [],
+                "watch_for": "等待可靠来源确认。"
+              }]
+            }
+            """,
+            pack,
+            [{"ticker": "NVDA", "company": "NVIDIA"}],
+            warnings=warnings,
+        )
+        self.assertEqual(result.portfolio_actions[0].action, "观察")
+        self.assertTrue(any("999" in w for w in warnings))
 
 
 if __name__ == "__main__":
