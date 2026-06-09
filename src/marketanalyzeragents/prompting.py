@@ -144,9 +144,9 @@ def build_codex_task_prompt(
         if guidance
         else ""
     )
-    return f"""You are Codex running the Daily Research Agent in this repository.
+    return f"""You are Codex running the pre-market workflow of Market Analyzer Agents.
 
-Goal: create today's daily research brief and save it to:
+Goal: create today's pre-market research brief and save it to:
 {output_path}
 
 Hard constraints:

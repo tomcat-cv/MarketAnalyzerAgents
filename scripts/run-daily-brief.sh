@@ -7,4 +7,4 @@ PYTHON="${PYTHON:-python3}"
 cd "$ROOT"
 export PYTHONPATH="$ROOT/src:${PYTHONPATH:-}"
 
-exec "$PYTHON" -m dailyresearch run "$@"
+exec "$PYTHON" -m marketanalyzeragents run "$@"

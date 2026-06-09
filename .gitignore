@@ -23,6 +23,8 @@ dist/
 *.tmp
 briefs/
 runs/
+state/
+reviews/
 memory/feedback.md
 memory/*.local.md
 .agents/

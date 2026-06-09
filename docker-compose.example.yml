@@ -1,15 +1,15 @@
 services:
-  dailyresearch:
+  marketanalyzeragents:
     build: .
     env_file:
       - .env
     environment:
-      DAILYRESEARCH_SCHEDULE_MODE: daily
-      DAILYRESEARCH_SCHEDULE_TIME: "06:00"
-      DAILYRESEARCH_RUN_ON_START: "false"
+      MARKET_ANALYZER_AGENTS_SCHEDULE_MODE: daily
+      MARKET_ANALYZER_AGENTS_SCHEDULE_TIME: "06:00"
+      MARKET_ANALYZER_AGENTS_RUN_ON_START: "false"
     volumes:
       - ./config:/app/config:ro
       - ./briefs:/app/briefs
       - ./runs:/app/runs
       - ./memory:/app/memory
-    command: ["dailyresearch", "schedule"]
+    command: ["marketanalyzeragents", "schedule"]

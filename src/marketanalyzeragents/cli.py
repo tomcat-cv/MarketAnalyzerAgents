@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time as time_module
 from datetime import date, datetime
@@ -12,8 +13,9 @@ try:
 except ImportError:  # pragma: no cover - Python 3.8 fallback
     ZoneInfo = None  # type: ignore
 
-from .collectors import collect_evidence, resolve_research_window, window_duration_hours
-from .config import ensure_dirs, find_project_root, load_settings, read_inputs
+from .collectors import HttpClient, collect_evidence, resolve_research_window, window_duration_hours
+from .agent_debate import backend_invoker, run_agent_debate
+from .config import ensure_dirs, find_project_root, load_settings, read_inputs, resolve_path
 from .codex_runner import CodexRunnerError, run_codex_exec
 from .env import load_dotenv
 from .evidence import (
@@ -32,9 +34,18 @@ from .evidence import (
     validate_summary_citations,
 )
 from .html_renderer import render_html_document
+from .intraday import (
+    JsonlConversationPort,
+    build_suggestion,
+    fetch_yahoo_market_data,
+    market_history_payload,
+)
+from .market_calendar import market_status
 from .openai_runner import OpenAIError, run_openai
+from .portfolio_store import PortfolioStore
 from .prompting import build_codex_task_prompt, build_openai_messages
 from .scheduler import ScheduleError, local_now, next_run_at, seconds_until
+from .review import build_daily_review
 from .writer import output_path_for, run_stamp, runs_dir_for, source_log_path_for, write_json, write_text
 from .zhipu_runner import ZhipuError, run_zhipu
 
@@ -435,6 +446,143 @@ def command_feedback(args: argparse.Namespace) -> int:
     return 0
 
 
+def _store_and_outbox(root: Path, settings: dict[str, Any]) -> tuple[PortfolioStore, JsonlConversationPort]:
+    state = settings.get("state", {})
+    store = PortfolioStore(resolve_path(root, state.get("database_path", "state/portfolio.db")))
+    outbox = JsonlConversationPort(
+        resolve_path(root, state.get("conversation_outbox", "state/conversation-outbox.jsonl"))
+    )
+    return store, outbox
+
+
+def command_market_status(args: argparse.Namespace) -> int:
+    root = find_project_root()
+    settings = load_settings(root)
+    market_settings = settings.get("markets", {}).get(args.market, {})
+    status = market_status(args.market, holidays=market_settings.get("holidays", []))
+    print(json.dumps(status.__dict__, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def command_intraday(args: argparse.Namespace) -> int:
+    root = find_project_root()
+    load_dotenv(root / ".env")
+    settings = load_settings(root)
+    inputs = read_inputs(root, settings)
+    holdings = [
+        holding for holding in configured_portfolio_holdings(inputs.get("sources", {}))
+        if holding["market"] == args.market
+    ]
+    if not holdings:
+        print(f"No configured holdings for {args.market}.", file=sys.stderr)
+        return 2
+    store, outbox = _store_and_outbox(root, settings)
+    market_settings = settings.get("markets", {}).get(args.market, {})
+    agent_settings = settings.get("intraday_agents", {})
+    interval = args.interval or int(market_settings.get("poll_interval_seconds", 60))
+    debate_rounds = args.debate_rounds or int(agent_settings.get("debate_rounds", 1))
+    max_agent_evidence = int(agent_settings.get("max_evidence_items_per_symbol", 8))
+    history_points = int(agent_settings.get("price_history_points", 20))
+    market_data_settings = settings.get("market_data", {})
+    if market_data_settings.get("provider", "yahoo") != "yahoo":
+        print("Only the yahoo market-data provider is currently implemented.", file=sys.stderr)
+        return 2
+    client = HttpClient(
+        str(settings.get("collectors", {}).get("user_agent", "market-analyzer-agents/0.1")),
+        int(settings.get("collectors", {}).get("timeout_seconds", 30)),
+    )
+    while True:
+        status = market_status(args.market, holidays=market_settings.get("holidays", []))
+        if status.state != "open" and not args.force:
+            print(f"{args.market} is {status.state}; no intraday polling performed.")
+            return 0
+        evidence_by_ticker: dict[str, list[dict[str, Any]]] = {}
+        if args.with_news:
+            pack = collect_evidence(settings=settings, sources=inputs.get("sources", {}))
+            for item in pack.items:
+                if item.evidence_level != "summary":
+                    continue
+                for ticker in item.matched_tickers:
+                    evidence_by_ticker.setdefault(ticker.upper(), []).append(item.__dict__)
+        for holding in holdings:
+            data = fetch_yahoo_market_data(
+                client,
+                args.market,
+                holding["symbol"],
+                history_range=str(market_data_settings.get("history_range", "6mo")),
+                history_interval=str(market_data_settings.get("history_interval", "1d")),
+            )
+            quote = data.quote
+            store.save_quotes([quote])
+            store.save_price_bars(data.history)
+            evidence = evidence_by_ticker.get(holding["ticker"].upper(), [])[:max_agent_evidence]
+            turns = []
+            if args.advice_backend != "conservative":
+                debate = run_agent_debate(
+                    quote=quote,
+                    evidence=evidence,
+                    invoke=backend_invoker(settings, args.advice_backend),
+                    rounds=debate_rounds,
+                    price_history=market_history_payload(data, history_points),
+                    portfolio=holding,
+                )
+                suggestion = debate.suggestion
+                turns = debate.turns
+            else:
+                suggestion = build_suggestion(
+                    store, quote, [item["id"] for item in evidence]
+                )
+            suggestion["id"] = store.save_suggestion(suggestion)
+            if turns:
+                store.save_discussion(suggestion["id"], turns)
+                outbox.deliver(
+                    {
+                        "type": "intraday_agent_discussion",
+                        "suggestion_id": suggestion["id"],
+                        "market": quote.market,
+                        "symbol": quote.symbol,
+                        "turns": [turn.__dict__ for turn in turns],
+                    }
+                )
+            outbox.deliver(suggestion)
+            print(json.dumps(suggestion, ensure_ascii=False))
+        if not args.watch:
+            return 0
+        time_module.sleep(interval)
+
+
+def command_operation(args: argparse.Namespace) -> int:
+    root = find_project_root()
+    settings = load_settings(root)
+    store, _ = _store_and_outbox(root, settings)
+    operated_at = args.at or local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat()
+    operation = {
+        "market": args.market,
+        "symbol": args.symbol,
+        "operated_at": operated_at,
+        "action": args.action,
+        "quantity": args.quantity,
+        "price": args.price,
+        "note": args.note or "",
+    }
+    operation["id"] = store.save_operation(operation)
+    print(json.dumps(operation, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_review(args: argparse.Namespace) -> int:
+    root = find_project_root()
+    settings = load_settings(root)
+    store, outbox = _store_and_outbox(root, settings)
+    day = args.date or local_now(str(settings.get("timezone", "Asia/Shanghai"))).date().isoformat()
+    review = build_daily_review(store, args.market, day)
+    output = resolve_path(root, args.output or f"reviews/{day}-{args.market}.json")
+    write_json(output, review)
+    outbox.deliver({"type": "post_market_review", **review, "output": str(output)})
+    print(f"Review written: {output}")
+    return 0
+
+
 def _run_once_from_schedule(args: argparse.Namespace) -> int:
     run_args = argparse.Namespace(
         backend=args.backend,
@@ -484,12 +632,12 @@ def command_schedule(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="dailyresearch",
-        description="Create a Codex-friendly daily research brief without Claude or n8n.",
+        prog="marketanalyzeragents",
+        description="Run Market Analyzer Agents workflows.",
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    run_parser = subparsers.add_parser("run", help="Generate a daily research brief.")
+    run_parser = subparsers.add_parser("run", help="Generate a pre-market research brief.")
     add_common_run_args(run_parser)
     run_parser.set_defaults(func=command_run)
 
@@ -510,6 +658,48 @@ def build_parser() -> argparse.ArgumentParser:
     feedback_parser.add_argument("--dislike", action="append", help="Negative preference to remember.")
     feedback_parser.add_argument("--correction", action="append", help="Correction to remember.")
     feedback_parser.set_defaults(func=command_feedback)
+
+    status_parser = subparsers.add_parser("market-status", help="Show a market session in Beijing time.")
+    status_parser.add_argument("--market", choices=["a_share", "us_equities"], required=True)
+    status_parser.set_defaults(func=command_market_status)
+
+    intraday_parser = subparsers.add_parser("intraday", help="Poll quotes and emit auditable suggestions.")
+    intraday_parser.add_argument("--market", choices=["a_share", "us_equities"], required=True)
+    intraday_parser.add_argument("--watch", action="store_true", help="Continue polling while the market is open.")
+    intraday_parser.add_argument("--interval", type=int, help="Polling interval in seconds.")
+    intraday_parser.add_argument("--force", action="store_true", help="Run once even when the market is closed.")
+    intraday_parser.add_argument(
+        "--with-news", action="store_true", help="Collect verified news before each advice cycle."
+    )
+    intraday_parser.add_argument(
+        "--advice-backend",
+        choices=["conservative", "zhipu", "openai"],
+        default="conservative",
+        help="Judgment backend. Conservative mode never emits directional advice.",
+    )
+    intraday_parser.add_argument(
+        "--debate-rounds",
+        type=int,
+        choices=range(1, 4),
+        help="Bull/bear discussion rounds. Defaults to intraday_agents.debate_rounds.",
+    )
+    intraday_parser.set_defaults(func=command_intraday)
+
+    operation_parser = subparsers.add_parser("operation", help="Record a user-confirmed operation.")
+    operation_parser.add_argument("--market", choices=["a_share", "us_equities"], required=True)
+    operation_parser.add_argument("--symbol", required=True)
+    operation_parser.add_argument("--action", choices=["buy", "sell", "hold", "skip"], required=True)
+    operation_parser.add_argument("--quantity", type=float, required=True)
+    operation_parser.add_argument("--price", type=float, required=True)
+    operation_parser.add_argument("--at", help="Operation timestamp in ISO 8601.")
+    operation_parser.add_argument("--note")
+    operation_parser.set_defaults(func=command_operation)
+
+    review_parser = subparsers.add_parser("review", help="Build a post-market review.")
+    review_parser.add_argument("--market", choices=["a_share", "us_equities"], required=True)
+    review_parser.add_argument("--date", help="Review date in YYYY-MM-DD.")
+    review_parser.add_argument("--output")
+    review_parser.set_defaults(func=command_review)
 
     schedule_parser = subparsers.add_parser("schedule", help="Run briefs on the configured schedule.")
     add_common_run_args(schedule_parser)

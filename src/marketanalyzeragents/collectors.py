@@ -903,7 +903,12 @@ def collect_evidence(
     source_collectors = sources.get("collectors", {})
     user_agent = os.environ.get(
         "RESEARCH_USER_AGENT",
-        str(collector_settings.get("user_agent", "dailyresearch/0.1 research@example.com")),
+        str(
+            collector_settings.get(
+                "user_agent",
+                "market-analyzer-agents/0.1 research@example.com",
+            )
+        ),
     )
     http_client = client or HttpClient(
         user_agent=user_agent,

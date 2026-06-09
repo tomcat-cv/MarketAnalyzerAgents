@@ -25,15 +25,33 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "output_dir": "briefs",
     "runs_dir": "runs",
+    "state": {
+        "database_path": "state/portfolio.db",
+        "conversation_outbox": "state/conversation-outbox.jsonl",
+    },
+    "markets": {
+        "a_share": {"holidays": [], "poll_interval_seconds": 60},
+        "us_equities": {"holidays": [], "poll_interval_seconds": 60},
+    },
+    "market_data": {
+        "provider": "yahoo",
+        "history_range": "6mo",
+        "history_interval": "1d",
+    },
+    "intraday_agents": {
+        "debate_rounds": 1,
+        "max_evidence_items_per_symbol": 8,
+        "price_history_points": 20,
+    },
     "schedule": {
         "mode": "daily",
         "time": "06:00",
         "interval_minutes": 1440,
         "run_on_start": False,
     },
-    "obsidian": {"vault_path": "", "note_dir": "Daily Research"},
+    "obsidian": {"vault_path": "", "note_dir": "Market Analyzer Agents"},
     "collectors": {
-        "user_agent": "dailyresearch/0.1 research@example.com",
+        "user_agent": "market-analyzer-agents/0.1 research@example.com",
         "timeout_seconds": 30,
         "max_evidence_items": 200,
     },
@@ -83,7 +101,7 @@ def load_settings(root: Path) -> Dict[str, Any]:
     settings_path = root / "config" / "settings.json"
     settings = deep_merge(DEFAULT_SETTINGS, load_json(settings_path, {}))
 
-    backend = os.environ.get("DAILYRESEARCH_BACKEND", settings.get("backend", "zhipu"))
+    backend = os.environ.get("MARKET_ANALYZER_AGENTS_BACKEND", settings.get("backend", "zhipu"))
     settings["backend"] = backend
 
     if os.environ.get("ZHIPU_MODEL"):
@@ -97,16 +115,16 @@ def load_settings(root: Path) -> Dict[str, Any]:
         settings["zhipu"]["api_base"] = os.environ["ZHIPU_API_BASE"]
     if os.environ.get("OBSIDIAN_VAULT_PATH"):
         settings["obsidian"]["vault_path"] = os.environ["OBSIDIAN_VAULT_PATH"]
-    if os.environ.get("DAILYRESEARCH_PROMPT_PATH"):
-        settings["prompt"]["extra_instructions_path"] = os.environ["DAILYRESEARCH_PROMPT_PATH"]
-    if os.environ.get("DAILYRESEARCH_SCHEDULE_MODE"):
-        settings["schedule"]["mode"] = os.environ["DAILYRESEARCH_SCHEDULE_MODE"]
-    if os.environ.get("DAILYRESEARCH_SCHEDULE_TIME"):
-        settings["schedule"]["time"] = os.environ["DAILYRESEARCH_SCHEDULE_TIME"]
-    if os.environ.get("DAILYRESEARCH_INTERVAL_MINUTES"):
-        settings["schedule"]["interval_minutes"] = int(os.environ["DAILYRESEARCH_INTERVAL_MINUTES"])
-    if os.environ.get("DAILYRESEARCH_RUN_ON_START"):
-        settings["schedule"]["run_on_start"] = os.environ["DAILYRESEARCH_RUN_ON_START"].strip().lower() in {
+    if os.environ.get("MARKET_ANALYZER_AGENTS_PROMPT_PATH"):
+        settings["prompt"]["extra_instructions_path"] = os.environ["MARKET_ANALYZER_AGENTS_PROMPT_PATH"]
+    if os.environ.get("MARKET_ANALYZER_AGENTS_SCHEDULE_MODE"):
+        settings["schedule"]["mode"] = os.environ["MARKET_ANALYZER_AGENTS_SCHEDULE_MODE"]
+    if os.environ.get("MARKET_ANALYZER_AGENTS_SCHEDULE_TIME"):
+        settings["schedule"]["time"] = os.environ["MARKET_ANALYZER_AGENTS_SCHEDULE_TIME"]
+    if os.environ.get("MARKET_ANALYZER_AGENTS_INTERVAL_MINUTES"):
+        settings["schedule"]["interval_minutes"] = int(os.environ["MARKET_ANALYZER_AGENTS_INTERVAL_MINUTES"])
+    if os.environ.get("MARKET_ANALYZER_AGENTS_RUN_ON_START"):
+        settings["schedule"]["run_on_start"] = os.environ["MARKET_ANALYZER_AGENTS_RUN_ON_START"].strip().lower() in {
             "1",
             "true",
             "yes",

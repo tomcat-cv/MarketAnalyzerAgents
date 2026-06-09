@@ -16,6 +16,30 @@
   },
   "output_dir": "briefs",
   "runs_dir": "runs",
+  "state": {
+    "database_path": "state/portfolio.db",
+    "conversation_outbox": "state/conversation-outbox.jsonl"
+  },
+  "markets": {
+    "a_share": {
+      "holidays": [],
+      "poll_interval_seconds": 60
+    },
+    "us_equities": {
+      "holidays": [],
+      "poll_interval_seconds": 60
+    }
+  },
+  "market_data": {
+    "provider": "yahoo",
+    "history_range": "6mo",
+    "history_interval": "1d"
+  },
+  "intraday_agents": {
+    "debate_rounds": 1,
+    "max_evidence_items_per_symbol": 8,
+    "price_history_points": 20
+  },
   "schedule": {
     "mode": "daily",
     "time": "06:00",
@@ -23,13 +47,13 @@
     "run_on_start": false
   },
   "collectors": {
-    "user_agent": "dailyresearch/0.1 research@example.com",
+    "user_agent": "market-analyzer-agents/0.1 research@example.com",
     "timeout_seconds": 30,
     "max_evidence_items": 200
   },
   "obsidian": {
     "vault_path": "",
-    "note_dir": "Daily Research"
+    "note_dir": "Market Analyzer Agents"
   },
   "openai": {
     "api_base": "https://api.openai.com/v1",

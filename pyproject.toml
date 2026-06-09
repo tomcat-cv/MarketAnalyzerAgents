@@ -1,12 +1,12 @@
 [project]
-name = "dailyresearch"
+name = "market-analyzer-agents"
 version = "0.1.0"
-description = "A Codex-friendly daily research brief agent without Claude or n8n."
+description = "A Beijing-time portfolio research agent for A-share and US equity markets."
 requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]
-dailyresearch = "dailyresearch.cli:main"
+marketanalyzeragents = "marketanalyzeragents.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

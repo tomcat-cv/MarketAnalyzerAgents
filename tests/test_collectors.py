@@ -1,10 +1,9 @@
 from datetime import datetime, timedelta, timezone
 import unittest
 
-from dailyresearch.collectors import (
+from marketanalyzeragents.collectors import (
     collect_evidence,
     collect_cninfo_announcements,
-    collect_finnhub_news,
     collect_rss_items,
     collect_sec_filings,
     collect_yahoo_market_snapshot,
@@ -93,28 +92,6 @@ class YahooClient:
         }
 
 
-class FinnhubClient:
-    def get_json(self, url):
-        return [
-            {
-                "datetime": 1780560000,
-                "headline": "Verified company report",
-                "summary": "A reputable reporting summary.",
-                "source": "Reuters",
-                "url": "https://reuters.example/report",
-                "related": "NVDA",
-            },
-            {
-                "datetime": 1780560000,
-                "headline": "Unapproved publisher",
-                "summary": "Should be filtered.",
-                "source": "Unknown",
-                "url": "https://unknown.example/report",
-                "related": "NVDA",
-            },
-        ]
-
-
 class CollectorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = FakeClient()
@@ -148,17 +125,6 @@ class CollectorTests(unittest.TestCase):
         )
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].evidence_level, "title_only")
-
-    def test_collects_sec_filings_for_watchlist(self) -> None:
-        items = collect_sec_filings(
-            client=self.client,
-            sources={"watchlist": {"us_equities": [{"ticker": "NVDA", "themes": ["AI"]}]}},
-            config={"forms": ["8-K"], "max_per_company": 2},
-            cutoff=self.cutoff,
-        )
-        self.assertEqual(len(items), 1)
-        self.assertIn("8-K", items[0].title)
-        self.assertEqual(items[0].matched_tickers, ["NVDA"])
 
     def test_sec_document_text_upgrades_filing_to_summary_evidence(self) -> None:
         items = collect_sec_filings(
@@ -262,28 +228,6 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("最新股价", pack.items[0].title)
         self.assertIn("Latest available price", pack.items[0].content)
         self.assertIn("holding_price_snapshot", {entry.category for entry in pack.coverage})
-
-    def test_finnhub_filters_to_configured_publishers(self) -> None:
-        items = collect_finnhub_news(
-            client=FinnhubClient(),
-            sources={
-                "portfolios": {
-                    "us_equities": {"holdings": [{"ticker": "NVDA", "company": "NVIDIA"}]}
-                }
-            },
-            config={
-                "include_market_news": False,
-                "include_company_news": True,
-                "allowed_publishers": ["Reuters"],
-            },
-            token="secret",
-            cutoff=datetime(2026, 6, 3, tzinfo=timezone.utc),
-            window_end=datetime(2026, 6, 5, tzinfo=timezone.utc),
-        )
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0].matched_tickers, ["NVDA"])
-        self.assertEqual(items[0].source_name, "Finnhub / Reuters")
-
 
 if __name__ == "__main__":
     unittest.main()

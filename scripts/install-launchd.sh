@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LABEL="${LABEL:-com.dailyresearch.brief}"
-HOUR="${DAILYRESEARCH_HOUR:-6}"
-MINUTE="${DAILYRESEARCH_MINUTE:-0}"
-BACKEND="${DAILYRESEARCH_BACKEND:-zhipu}"
+LABEL="${LABEL:-com.marketanalyzeragents.brief}"
+HOUR="${MARKET_ANALYZER_AGENTS_HOUR:-6}"
+MINUTE="${MARKET_ANALYZER_AGENTS_MINUTE:-0}"
+BACKEND="${MARKET_ANALYZER_AGENTS_BACKEND:-zhipu}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/runs"

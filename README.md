@@ -1,12 +1,25 @@
-# Daily Research Brief Agent
+# Market Analyzer Agents
 
-每日自动采集可靠信源，生成一份证据可溯源的 5 分钟研究简报。支持智谱 GLM-5.1、OpenAI Responses API 和 Codex CLI 后端，通过 CLI、launchd 或 cron 调度运行。
+双市场投资组合智能体：面向 A 股和美股、统一按北京时间呈现的全流程投资组合研究与跟踪程序。
+
+## 当前状态
+
+项目已提供盘前资讯、盘中行情轮询与审计建议、用户操作记录、盘后复盘的基础闭环。实时行情通过可替换 provider 获取，当前内置 Yahoo Finance 参考适配器；其授权、延迟和限流不适合直接视为交易所级实时数据。对话层当前实现 JSONL outbox，后续可替换为正式交互渠道。
+
+A 股和美股按两套独立市场流程设计，各自维护交易日历、交易时段、数据新鲜度和建议状态；所有面向用户的时间均转换为北京时间。美股时间必须基于 `America/New_York` 动态换算，不能固定写死夏令时或冬令时的北京时间。
+
+完整目标、边界和分阶段计划见 [`PROJECT_PLAN.md`](PROJECT_PLAN.md)。
+
+当前盘前模块支持智谱 GLM-5.1、OpenAI Responses API 和 Codex CLI 后端，通过 CLI、launchd 或 cron 调度运行。
+
+产品名、Python 包名和安装后的 CLI 统一为 `Market Analyzer Agents` / `marketanalyzeragents`。
 
 ## 项目结构
 
 ```text
 .
 ├── AGENTS.md                       # Codex 项目规则
+├── PROJECT_PLAN.md                 # 产品目标、架构边界与交付阶段
 ├── config/
 │   ├── prompt-overrides.md         # 部署时可调整的额外提示词偏好
 │   ├── research-context.md         # 研究目标、偏好、过滤规则
@@ -19,7 +32,7 @@
 │   ├── run-daily-brief.sh          # 运行入口
 │   ├── install-launchd.sh          # macOS 定时任务安装
 │   └── codex-automation-prompt.md  # Codex Automation 提示词
-├── src/dailyresearch/
+├── src/marketanalyzeragents/
 │   ├── cli.py                      # CLI 入口（run / collect / render / doctor / feedback）
 │   ├── collectors.py               # SEC / RSS / 巨潮 / Yahoo 独立采集器
 │   ├── evidence.py                 # Evidence Pack、引用校验、简报拼装
@@ -45,16 +58,16 @@ cp .env.example .env
 # 编辑 .env，填入 ZHIPU_API_KEY
 
 # 检查配置
-PYTHONPATH=src python3 -m dailyresearch doctor
+PYTHONPATH=src python3 -m marketanalyzeragents doctor
 
 # 不联网 dry run，确认提示词和输出路径
-PYTHONPATH=src python3 -m dailyresearch run --backend dry-run
+PYTHONPATH=src python3 -m marketanalyzeragents run --backend dry-run
 
 # 生成简报
-PYTHONPATH=src python3 -m dailyresearch run --backend zhipu
+PYTHONPATH=src python3 -m marketanalyzeragents run --backend zhipu
 
 # 按配置定时生成简报
-PYTHONPATH=src python3 -m dailyresearch schedule
+PYTHONPATH=src python3 -m marketanalyzeragents schedule
 ```
 
 `.env` 至少需要：
@@ -69,33 +82,93 @@ ZHIPU_API_BASE=https://open.bigmodel.cn/api/paas/v4
 
 ```bash
 # 生成简报（默认智谱后端）
-PYTHONPATH=src python3 -m dailyresearch run --backend zhipu
+PYTHONPATH=src python3 -m marketanalyzeragents run --backend zhipu
 
 # 指定输出格式
-PYTHONPATH=src python3 -m dailyresearch run --backend zhipu --format markdown
+PYTHONPATH=src python3 -m marketanalyzeragents run --backend zhipu --format markdown
 
 # 使用 OpenAI 后端
-PYTHONPATH=src python3 -m dailyresearch run --backend openai
+PYTHONPATH=src python3 -m marketanalyzeragents run --backend openai
 
 # 使用 Codex CLI 后端
-PYTHONPATH=src python3 -m dailyresearch run --backend codex
+PYTHONPATH=src python3 -m marketanalyzeragents run --backend codex
 
 # 仅采集证据，不调用模型
-PYTHONPATH=src python3 -m dailyresearch collect
+PYTHONPATH=src python3 -m marketanalyzeragents collect
 
 # 把 Markdown 简报渲染成 HTML
-PYTHONPATH=src python3 -m dailyresearch render briefs/2026-05-29-brief.md
+PYTHONPATH=src python3 -m marketanalyzeragents render briefs/2026-05-29-brief.md
 
 # 按配置定时运行。默认读取 config/settings.json 的 schedule 段
-PYTHONPATH=src python3 -m dailyresearch schedule
+PYTHONPATH=src python3 -m marketanalyzeragents schedule
 
 # 通过调度入口立即跑一次，适合验证容器命令
-PYTHONPATH=src python3 -m dailyresearch schedule --once --backend dry-run
+PYTHONPATH=src python3 -m marketanalyzeragents schedule --once --backend dry-run
 
 # 追加反馈
-PYTHONPATH=src python3 -m dailyresearch feedback \
+PYTHONPATH=src python3 -m marketanalyzeragents feedback \
   --like “多给我一级来源链接” \
   --dislike “不要泛泛总结融资新闻”
+
+# 查看独立市场会话状态（输出时间均为北京时间）
+PYTHONPATH=src python3 -m marketanalyzeragents market-status --market us_equities
+
+# 开盘期间持续获取行情并生成可审计建议
+PYTHONPATH=src python3 -m marketanalyzeragents intraday --market us_equities --watch
+
+# 每轮同时采集已验证资讯，并使用模型做判断
+PYTHONPATH=src python3 -m marketanalyzeragents intraday --market us_equities \
+  --watch --with-news --advice-backend zhipu
+
+# 增加牛熊讨论轮数（支持 1-3 轮）
+PYTHONPATH=src python3 -m marketanalyzeragents intraday --market us_equities \
+  --watch --with-news --advice-backend zhipu --debate-rounds 2
+
+# 记录用户实际操作
+PYTHONPATH=src python3 -m marketanalyzeragents operation --market us_equities \
+  --symbol NVDA --action buy --quantity 10 --price 100
+
+# 生成盘后复盘
+PYTHONPATH=src python3 -m marketanalyzeragents review --market us_equities
+```
+
+### 盘中多 Agent 讨论
+
+显式选择 `zhipu` 或 `openai` 建议后端时，每个标的按以下顺序讨论：
+
+1. 行情分析 Agent：只分析价格、成交量和数据新鲜度。
+2. 新闻分析 Agent：只分析已验证资讯和证据缺口。
+3. 看多与看空研究 Agent：按配置轮数互相回应。
+4. 风险管理 Agent：检查过期数据、证据不足和失效条件。
+5. 组合经理 Agent：输出最终结构化建议。
+
+完整发言写入 SQLite 的 `agent_discussions` 表，并通过 conversation outbox
+输出。行情 Agent 只接收当前行情和近期价格序列，新闻 Agent 才接收证据，
+后续角色同时获得两类分析和持仓配置。默认每个标的最多使用 8 条证据、20
+个历史价格点，讨论轮数默认 1，均可在 `config/settings.json` 的
+`intraday_agents` 段调整。
+
+该角色分层参考了本地 Apache-2.0 项目 TradingAgents 的分析、辩论和管理者
+裁决思路，但当前实现是适配本项目标准库架构的独立轻量协议，不依赖
+LangGraph，也未复制其执行图代码。
+
+### 盘中行情数据
+
+盘中行情默认通过 Yahoo Chart 参考接口获取。美股直接使用 `NVDA` 这类代码；
+A 股裸代码会自动映射为沪市 `.SS`、深市 `.SZ` 或北交所 `.BJ`。每轮获取最新
+`1m` 行情和配置区间的日线 OHLCV，计算区间涨跌、年化波动率和最大回撤，
+随后写入 SQLite 并交给盘中 agents。
+
+Yahoo 接口无需密钥，但属于非官方、非交易级参考源，可能延迟、限流或变更。
+生产部署应替换为有合法行情权限的供应商。富途 OpenAPI 是同时覆盖 A 股和
+美股实时行情、历史 K 线的一种候选，但需要运行 OpenD 并满足行情权限与额度。
+
+```json
+"market_data": {
+  "provider": "yahoo",
+  "history_range": "6mo",
+  "history_interval": "1d"
+}
 ```
 
 ## 调度与提示词配置
@@ -120,16 +193,16 @@ PYTHONPATH=src python3 -m dailyresearch feedback \
 部署时也可以用环境变量覆盖：
 
 ```bash
-DAILYRESEARCH_SCHEDULE_MODE=interval
-DAILYRESEARCH_INTERVAL_MINUTES=360
-DAILYRESEARCH_RUN_ON_START=true
+MARKET_ANALYZER_AGENTS_SCHEDULE_MODE=interval
+MARKET_ANALYZER_AGENTS_INTERVAL_MINUTES=360
+MARKET_ANALYZER_AGENTS_RUN_ON_START=true
 ```
 
 提示词偏好在 `config/research-context.md`、`memory/feedback.md` 和
 `config/prompt-overrides.md` 中配置。它们只影响关注重点、写作风格和风险表述，
 不会作为事实证据使用；事实只能来自 Evidence Pack 中的已采集条目。
 
-## 简报流程
+## 当前盘前简报流程
 
 ```text
 Yahoo 行情 / SEC EDGAR / 官方 RSS / 巨潮资讯
@@ -232,16 +305,16 @@ bash scripts/run-daily-brief.sh --backend zhipu
 
 ### Docker
 
-容器默认运行 `dailyresearch schedule`，按 `config/settings.json` 或环境变量里的调度配置生成简报。
+容器默认运行 `marketanalyzeragents schedule`，按 `config/settings.json` 或环境变量里的调度配置生成简报。
 
 ```bash
-docker build -t dailyresearch .
+docker build -t market-analyzer-agents .
 docker run --rm --env-file .env \
   -v "$PWD/config:/app/config:ro" \
   -v "$PWD/briefs:/app/briefs" \
   -v "$PWD/runs:/app/runs" \
   -v "$PWD/memory:/app/memory" \
-  dailyresearch
+  market-analyzer-agents
 ```
 
 使用 Compose：
@@ -249,7 +322,7 @@ docker run --rm --env-file .env \
 ```bash
 cp docker-compose.example.yml docker-compose.yml
 docker compose up -d --build
-docker compose logs -f dailyresearch
+docker compose logs -f marketanalyzeragents
 ```
 
 ### 静态站点
@@ -267,13 +340,13 @@ docker compose logs -f dailyresearch
 ```bash
 bash scripts/install-launchd.sh
 # 自定义时间和后端
-DAILYRESEARCH_HOUR=6 DAILYRESEARCH_MINUTE=30 DAILYRESEARCH_BACKEND=codex bash scripts/install-launchd.sh
+MARKET_ANALYZER_AGENTS_HOUR=6 MARKET_ANALYZER_AGENTS_MINUTE=30 MARKET_ANALYZER_AGENTS_BACKEND=codex bash scripts/install-launchd.sh
 ```
 
 **cron：**
 
 ```cron
-0 6 * * * cd /path/to/dailyresearch && /bin/bash scripts/run-daily-brief.sh --backend zhipu >> runs/cron.out.log 2>> runs/cron.err.log
+0 6 * * * cd /path/to/market-analyzer-agents && /bin/bash scripts/run-daily-brief.sh --backend zhipu >> runs/cron.out.log 2>> runs/cron.err.log
 ```
 
 **Codex Automation：** 使用 `scripts/codex-automation-prompt.md` 作为 prompt。

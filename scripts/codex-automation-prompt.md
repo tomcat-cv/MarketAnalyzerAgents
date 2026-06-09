@@ -1,15 +1,16 @@
-Run the daily research briefing pipeline in this workspace.
+Run the implemented pre-market briefing pipeline for Dual Market Portfolio
+Agent in this workspace.
 
 Use the project rules in AGENTS.md. Generate today's brief with:
 
 ```bash
-PYTHONPATH=src python3 -m dailyresearch run --backend zhipu
+PYTHONPATH=src python3 -m marketanalyzeragents run --backend zhipu
 ```
 
 If ZHIPU_API_KEY is unavailable, use the Codex summary backend:
 
 ```bash
-PYTHONPATH=src python3 -m dailyresearch run --backend codex
+PYTHONPATH=src python3 -m marketanalyzeragents run --backend codex
 ```
 
 Both commands must use the project's independent collectors and Verified Evidence Pack.

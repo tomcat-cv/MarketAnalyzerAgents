@@ -21,7 +21,7 @@ def output_path_for(
     obsidian = settings.get("obsidian", {})
     vault_path = str(obsidian.get("vault_path", "")).strip()
     if vault_path:
-        note_dir = str(obsidian.get("note_dir", "Daily Research")).strip()
+        note_dir = str(obsidian.get("note_dir", "Market Analyzer Agents")).strip()
         base_dir = Path(vault_path).expanduser() / note_dir
     else:
         base_dir = resolve_path(root, settings.get("output_dir", "briefs"))

@@ -1,8 +1,13 @@
-# Research Context
+# Pre-market Research Context
 
 ## Mission
 
-Build a daily 5-minute market research brief that surfaces high-signal changes in US equities and A-share markets before they become obvious.
+Define the pre-market research behavior of Market Analyzer Agents. Build
+separate, evidence-grounded briefs for US equity and A-share portfolios before
+their respective market sessions. All displayed timestamps use Asia/Shanghai.
+
+Intraday tracking and post-market review are implemented by separate modules;
+this file intentionally controls only pre-market research priorities.
 
 ## Current Focus
 

@@ -1,4 +1,52 @@
-# Daily Research Agent
+# Market Analyzer Agents
+
+## Project Goal
+
+Build an end-to-end portfolio tracking system for A-share and US equity
+portfolios. The system must use Beijing time (`Asia/Shanghai`) for all
+user-facing schedules and timestamps while respecting each market's own
+calendar, session boundaries, holidays, and US daylight-saving changes.
+
+The intended workflow is:
+
+1. Before each market opens, collect and organize current market, company,
+   portfolio, and macro news into a traceable evidence brief.
+2. During each market session, retrieve current and historical price data at
+   configurable high frequency, combine price changes with verified news, and
+   periodically produce evidence-grounded operation suggestions.
+3. After each market closes, ingest the user's actual operation records,
+   compare decisions with prior suggestions and market outcomes, and produce a
+   review that improves future judgment.
+
+A-share and US equity workflows are separate market systems. They may share
+domain models and infrastructure, but must not share market calendars,
+session state, data freshness assumptions, or recommendation state.
+
+## Current Implementation Boundary
+
+The repository now contains a foundation for the full workflow: pre-market
+briefs, independent A-share and US session calculation, SQLite quote and
+audit storage, configurable intraday polling, conservative timed suggestions,
+explicit operation ingestion, post-market review, and a transport-neutral
+conversation outbox.
+
+The built-in Yahoo Finance adapter is a reference data source, not a claim of
+licensed exchange-grade real-time data. Production use still requires
+official holiday feeds, selected licensed quote providers, and an approved
+model-backed recommendation policy. Without verified news and an approved
+judgment backend, intraday output must remain non-directional.
+
+Intraday model judgment uses a bounded discussion protocol: market and news
+analysts provide separate views, bull and bear researchers debate, a risk
+manager challenges the result, and a portfolio manager emits the final
+structured decision. Preserve the full transcript for audit. Do not add roles
+that consume the same inputs without a distinct decision responsibility.
+
+The future conversation channel must be behind an interface so its transport
+and product design can be selected later. Do not add a chat framework until a
+technical design is explicitly approved.
+
+See `PROJECT_PLAN.md` for scope, architecture boundaries, and delivery phases.
 
 These rules apply to every task in this project unless explicitly overridden.
 Bias: caution over speed on non-trivial work. Use judgment on trivial tasks.

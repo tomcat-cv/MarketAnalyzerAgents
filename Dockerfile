@@ -16,6 +16,6 @@ RUN pip install --no-cache-dir . \
     && mkdir -p briefs runs memory
 
 HEALTHCHECK --interval=5m --timeout=10s --start-period=30s \
-    CMD dailyresearch doctor >/dev/null || exit 1
+    CMD marketanalyzeragents doctor >/dev/null || exit 1
 
-CMD ["dailyresearch", "schedule"]
+CMD ["marketanalyzeragents", "schedule"]
