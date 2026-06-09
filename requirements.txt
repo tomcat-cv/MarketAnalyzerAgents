@@ -1,0 +1,10 @@
+# Market Analyzer Agents — runtime dependencies
+# ────────────────────────────────────────────
+# This project uses only the Python standard library (≥ 3.9).
+# No third-party packages are required at runtime.
+#
+# Windows users: install tzdata for timezone support
+#   pip install tzdata
+#
+# For development / testing:
+#   pip install -r requirements-dev.txt

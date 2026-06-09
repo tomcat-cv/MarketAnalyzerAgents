@@ -1,12 +1,19 @@
 [project]
 name = "market-analyzer-agents"
 version = "0.1.0"
-description = "A Beijing-time portfolio research agent for A-share and US equity markets."
+description = "A multi-market portfolio research agent for A-share and US equity markets."
+readme = "README.md"
 requires-python = ">=3.9"
+# Zero third-party runtime dependencies — only the Python standard library.
+# Windows users: pip install tzdata
 dependencies = []
 
 [project.scripts]
 marketanalyzeragents = "marketanalyzeragents.cli:main"
+
+[project.urls]
+Repository = "https://github.com/tomcat-cv/MarketAnalyzerAgents"
+Issues = "https://github.com/tomcat-cv/MarketAnalyzerAgents/issues"
 
 [build-system]
 requires = ["setuptools>=68"]

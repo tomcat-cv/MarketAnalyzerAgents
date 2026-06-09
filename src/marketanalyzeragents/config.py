@@ -68,6 +68,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "thinking": "enabled",
     },
     "codex": {"model": "", "sandbox": "workspace-write", "extra_writable_dirs": []},
+    "feishu": {"webhook_url": "", "timeout_seconds": 10},
 }
 
 

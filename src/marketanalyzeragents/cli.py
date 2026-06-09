@@ -35,13 +35,13 @@ from .evidence import (
 )
 from .html_renderer import render_html_document
 from .intraday import (
-    JsonlConversationPort,
     build_suggestion,
     fetch_yahoo_market_data,
     market_history_payload,
 )
 from .market_calendar import market_status
 from .openai_runner import OpenAIError, run_openai
+from .feishu_port import build_outbox
 from .portfolio_store import PortfolioStore
 from .prompting import build_codex_task_prompt, build_openai_messages
 from .scheduler import ScheduleError, local_now, next_run_at, seconds_until
@@ -446,12 +446,10 @@ def command_feedback(args: argparse.Namespace) -> int:
     return 0
 
 
-def _store_and_outbox(root: Path, settings: dict[str, Any]) -> tuple[PortfolioStore, JsonlConversationPort]:
+def _store_and_outbox(root: Path, settings: dict[str, Any]) -> tuple[PortfolioStore, Any]:
     state = settings.get("state", {})
     store = PortfolioStore(resolve_path(root, state.get("database_path", "state/portfolio.db")))
-    outbox = JsonlConversationPort(
-        resolve_path(root, state.get("conversation_outbox", "state/conversation-outbox.jsonl"))
-    )
+    outbox = build_outbox(root, settings)
     return store, outbox
 
 

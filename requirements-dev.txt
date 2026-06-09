@@ -1,0 +1,8 @@
+# Market Analyzer Agents — development dependencies
+# ────────────────────────────────────────────────
+# Install with:  pip install -r requirements-dev.txt
+#
+# This includes all runtime dependencies (none currently) plus tools
+# needed for development and testing.
+
+pytest>=7.0
