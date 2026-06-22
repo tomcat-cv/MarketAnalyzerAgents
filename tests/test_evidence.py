@@ -72,6 +72,19 @@ class EvidenceContractTests(unittest.TestCase):
             ["Unverified citation URL: https://invented.example/a"],
         )
 
+    def test_source_log_prefers_reader_link_and_keeps_data_link_auditable(self) -> None:
+        item = evidence("https://query1.finance.yahoo.com/v8/finance/chart/NVDA")
+        item.id = "EVID-001"
+        item.display_url = "https://finance.yahoo.com/quote/NVDA"
+        pack = EvidencePack("2026-06-04T08:00:00+00:00", 24, items=[item])
+
+        rendered = source_log_markdown(pack)
+
+        self.assertIn("[EVID", rendered)
+        self.assertIn("](https://finance.yahoo.com/quote/NVDA)", rendered)
+        self.assertIn("[数据复核链接](https://query1.finance.yahoo.com/v8/finance/chart/NVDA)", rendered)
+        self.assertEqual(validate_summary_citations(rendered, pack), [])
+
     def test_structured_output_accepts_grounded_hold_decision(self) -> None:
         item = evidence()
         item.id = "EVID-001"

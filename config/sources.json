@@ -89,6 +89,67 @@
           ]
         }
       ]
+    },
+    {
+      "id": "macro_geopolitical_risk",
+      "name": "宏观与地缘风险",
+      "segments": [
+        {
+          "name": "风险偏好",
+          "topics": [
+            "主题:宏观风险",
+            "主题:地缘政治"
+          ]
+        },
+        {
+          "name": "美元与利率",
+          "topics": [
+            "主题:美元",
+            "主题:美债利率"
+          ]
+        },
+        {
+          "name": "能源冲击",
+          "topics": [
+            "主题:能源",
+            "主题:地缘政治"
+          ]
+        }
+      ],
+      "instruments": [
+        {
+          "symbol": "^VIX",
+          "name": "CBOE Volatility Index",
+          "topics": [
+            "主题:宏观风险",
+            "主题:地缘政治"
+          ]
+        },
+        {
+          "symbol": "DX-Y.NYB",
+          "name": "US Dollar Index",
+          "topics": [
+            "主题:美元",
+            "主题:宏观风险"
+          ]
+        },
+        {
+          "symbol": "^TNX",
+          "name": "US 10-Year Treasury Yield",
+          "topics": [
+            "主题:美债利率",
+            "主题:宏观风险"
+          ]
+        },
+        {
+          "symbol": "CL=F",
+          "name": "WTI Crude Oil Futures",
+          "topics": [
+            "主题:能源",
+            "主题:地缘政治"
+          ]
+        }
+      ]
     }
   ],
   "portfolios": {
@@ -494,6 +555,30 @@
         "category": "official_company_ir",
         "status": "reserved",
         "reason": "没有稳定的通用接口；已验证的公司专属官方 RSS 会单独启用。"
+      },
+      {
+        "name": "U.S. Treasury / OFAC Policy Feed",
+        "category": "geopolitical_policy",
+        "status": "reserved",
+        "reason": "用于制裁、金融限制与地缘政策风险；需要先确认稳定的官方订阅接口或授权 API。"
+      },
+      {
+        "name": "U.S. Commerce BIS Export Controls Feed",
+        "category": "geopolitical_policy",
+        "status": "reserved",
+        "reason": "用于半导体、AI 加速器和供应链出口管制风险；需要先确认稳定的官方订阅接口或授权 API。"
+      },
+      {
+        "name": "USTR Trade Policy Feed",
+        "category": "geopolitical_policy",
+        "status": "reserved",
+        "reason": "用于关税、贸易谈判和产业链政策风险；需要先确认稳定的官方订阅接口或授权 API。"
+      },
+      {
+        "name": "Professional Geopolitical News Feed",
+        "category": "professional_media",
+        "status": "reserved",
+        "reason": "地缘政治事件需要可靠新闻源交叉验证；优先使用 Reuters/LSEG、Dow Jones、Bloomberg 等授权源。"
       }
     ]
   }

@@ -607,6 +607,7 @@ def collect_yahoo_market_snapshot(
     query_start = int((cutoff - timedelta(days=7)).timestamp())
     query_end = int((window_end + timedelta(days=1)).timestamp())
     encoded_symbol = urllib.parse.quote(symbol, safe="")
+    display_url = f"https://finance.yahoo.com/quote/{encoded_symbol}"
     interval = str(instrument.get("interval", "1d")).strip() or "1d"
     api_url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?"
@@ -736,6 +737,7 @@ def collect_yahoo_market_snapshot(
             matched_topics=[str(value) for value in instrument.get("topics", [])],
             matched_tickers=matched_tickers,
             evidence_level="summary",
+            display_url=display_url,
         )
     ]
 

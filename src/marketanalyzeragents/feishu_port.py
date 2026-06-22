@@ -64,6 +64,8 @@ class FeishuConversationPort:
 
         if msg_type == "intraday_agent_discussion":
             return self._format_discussion(message)
+        if msg_type == "pre_market_brief":
+            return self._format_pre_market_brief(message)
         if msg_type == "post_market_review":
             return self._format_review(message)
         # Suggestion message (has "action" key) or unknown — render as rich
@@ -144,6 +146,40 @@ class FeishuConversationPort:
                     "zh_cn": {
                         "title": title,
                         "content": [[{"tag": "text", "text": line}] for line in lines if line],
+                    }
+                }
+            },
+        }
+
+    def _format_pre_market_brief(self, message: Mapping[str, Any]) -> dict[str, Any]:
+        """Format a generated pre-market brief notification."""
+        day = message.get("date", "")
+        generated_at = message.get("generated_at", "")
+        preview = str(message.get("preview", "")).strip()
+        preview_blocks = _preview_blocks_for_feishu(message.get("preview_blocks", []))
+        brief_url = _safe_http_url(message.get("brief_url", ""))
+
+        content: list[list[dict[str, str]]] = [[{"tag": "text", "text": f"盘前简报已生成 — {day}"}]]
+        if brief_url:
+            content.append([{"tag": "a", "text": "查看 HTML 简报", "href": brief_url}])
+        else:
+            content.append([{"tag": "text", "text": "未配置 Web 简报地址，飞书仅展示摘要预览。"}])
+        if preview_blocks:
+            content.append([{"tag": "text", "text": "摘要预览:"}])
+            content.extend(preview_blocks)
+        elif preview:
+            content.append([{"tag": "text", "text": "摘要预览:"}])
+            content.extend([[{"tag": "text", "text": line}] for line in preview[:2000].splitlines() if line.strip()])
+        if generated_at:
+            content.append([{"tag": "text", "text": f"时间: {generated_at}"}])
+
+        return {
+            "msg_type": "post",
+            "content": {
+                "post": {
+                    "zh_cn": {
+                        "title": f"盘前简报 {day}",
+                        "content": content,
                     }
                 }
             },
@@ -278,3 +314,46 @@ def _resolve_feishu_url(settings: Mapping[str, Any]) -> str:
         return env_url
     settings_url = str(settings.get("feishu", {}).get("webhook_url", "")).strip()
     return settings_url
+
+
+def _preview_blocks_for_feishu(value: Any) -> list[list[dict[str, str]]]:
+    if not isinstance(value, list):
+        return []
+
+    blocks: list[list[dict[str, str]]] = []
+    char_count = 0
+    for raw_block in value:
+        if not isinstance(raw_block, list):
+            continue
+        block: list[dict[str, str]] = []
+        for raw_token in raw_block:
+            if not isinstance(raw_token, Mapping):
+                continue
+            text = str(raw_token.get("text", "")).strip()
+            if not text:
+                continue
+            tag = raw_token.get("tag")
+            if tag == "a":
+                href = str(raw_token.get("href", "")).strip()
+                if _safe_http_url(href):
+                    block.append({"tag": "a", "text": text[:300], "href": href})
+                else:
+                    block.append({"tag": "text", "text": text[:300]})
+            else:
+                block.append({"tag": "text", "text": text[:500]})
+            char_count += len(text)
+            if char_count >= 2000:
+                break
+        if block:
+            blocks.append(block)
+        if char_count >= 2000 or len(blocks) >= 24:
+            break
+    return blocks
+
+
+def _safe_http_url(value: Any) -> str:
+    url = str(value or "").strip()
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return url
+    return ""

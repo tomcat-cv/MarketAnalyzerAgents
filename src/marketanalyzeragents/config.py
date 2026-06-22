@@ -69,6 +69,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "codex": {"model": "", "sandbox": "workspace-write", "extra_writable_dirs": []},
     "feishu": {"webhook_url": "", "timeout_seconds": 10},
+    "web": {"brief_base_url": ""},
 }
 
 
@@ -131,6 +132,8 @@ def load_settings(root: Path) -> Dict[str, Any]:
             "yes",
             "on",
         }
+    if os.environ.get("MARKET_ANALYZER_AGENTS_BRIEF_BASE_URL"):
+        settings["web"]["brief_base_url"] = os.environ["MARKET_ANALYZER_AGENTS_BRIEF_BASE_URL"].strip()
 
     return settings
 

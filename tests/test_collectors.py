@@ -190,7 +190,7 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("+2.00%", items[0].content)
         self.assertIn("Window range", items[0].content)
         self.assertTrue(items[0].url.startswith("https://query1.finance.yahoo.com/v8/finance/chart/"))
-        self.assertNotIn("finance.yahoo.com/quote", items[0].url)
+        self.assertEqual(items[0].display_url, "https://finance.yahoo.com/quote/%5EGSPC")
 
     def test_collect_evidence_adds_configured_holding_price_snapshots(self) -> None:
         pack = collect_evidence(

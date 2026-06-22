@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from html.parser import HTMLParser
 import json
 import sys
 import time as time_module
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import quote, urljoin
 
 try:
     from zoneinfo import ZoneInfo
@@ -48,6 +50,75 @@ from .scheduler import ScheduleError, local_now, next_run_at, seconds_until
 from .review import build_daily_review
 from .writer import output_path_for, run_stamp, runs_dir_for, source_log_path_for, write_json, write_text
 from .zhipu_runner import ZhipuError, run_zhipu
+
+
+class _BriefTextExtractor(HTMLParser):
+    _BLOCK_TAGS = {"h1", "h2", "h3", "h4", "p", "li", "div", "section"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._ignored_depth = 0
+        self._article_depth = 0
+        self._link_href = ""
+        self.parts: list[str] = []
+        self.article_parts: list[str] = []
+        self.blocks: list[list[dict[str, str]]] = []
+        self.article_blocks: list[list[dict[str, str]]] = []
+        self._current_block: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = {
+            class_name
+            for name, value in attrs
+            if name == "class" and value
+            for class_name in value.split()
+        }
+        if tag in {"script", "style", "noscript"} or "footer-note" in classes:
+            self._ignored_depth += 1
+        if tag == "article":
+            self._flush_block()
+            self._article_depth = 1
+        elif self._article_depth:
+            self._article_depth += 1
+        if tag in self._BLOCK_TAGS:
+            self._flush_block()
+        if tag == "a":
+            attrs_by_name = {name: value for name, value in attrs}
+            self._link_href = str(attrs_by_name.get("href") or "").strip()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._BLOCK_TAGS:
+            self._flush_block()
+        if tag == "a":
+            self._link_href = ""
+        if self._ignored_depth:
+            self._ignored_depth -= 1
+        if self._article_depth:
+            self._article_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if text and not self._ignored_depth:
+            self.parts.append(text)
+            if self._article_depth:
+                self.article_parts.append(text)
+            if self._link_href:
+                self._current_block.append({"tag": "a", "text": text, "href": self._link_href})
+            else:
+                self._current_block.append({"tag": "text", "text": text})
+
+    def close(self) -> None:
+        super().close()
+        self._flush_block()
+
+    def _flush_block(self) -> None:
+        if not self._current_block:
+            return
+        block = self._current_block
+        self.blocks.append(block)
+        if self._article_depth:
+            self.article_blocks.append(block)
+        self._current_block = []
 
 
 def parse_date(value: str | None, timezone: str) -> date:
@@ -200,6 +271,7 @@ def command_run(args: argparse.Namespace) -> int:
             write_text(output_path, brief_text)
         print(f"Brief written without model inference: {output_path}")
         print(f"Source log written: {source_log_path}")
+        _notify_pre_market_brief(root, settings, run_date, output_path)
         return 0
 
     if backend != "dry-run":
@@ -236,7 +308,7 @@ def command_run(args: argparse.Namespace) -> int:
             print(f"OpenAI backend failed: {exc}", file=sys.stderr)
             return 2
 
-        return write_model_brief(
+        exit_code = write_model_brief(
             result_text=result.text,
             raw=result.raw,
             payload=payload,
@@ -252,6 +324,9 @@ def command_run(args: argparse.Namespace) -> int:
             holdings=holdings,
             focus_topics=focus_topics,
         )
+        if exit_code == 0:
+            _notify_pre_market_brief(root, settings, run_date, output_path)
+        return exit_code
 
     if backend == "zhipu":
         try:
@@ -265,7 +340,7 @@ def command_run(args: argparse.Namespace) -> int:
             print(f"Zhipu backend failed: {exc}", file=sys.stderr)
             return 2
 
-        return write_model_brief(
+        exit_code = write_model_brief(
             result_text=result.text,
             raw=result.raw,
             payload=payload,
@@ -281,6 +356,9 @@ def command_run(args: argparse.Namespace) -> int:
             holdings=holdings,
             focus_topics=focus_topics,
         )
+        if exit_code == 0:
+            _notify_pre_market_brief(root, settings, run_date, output_path)
+        return exit_code
 
     if backend == "codex":
         codex_prompt = build_codex_task_prompt(
@@ -324,6 +402,7 @@ def command_run(args: argparse.Namespace) -> int:
         print(f"Codex run complete. Expected brief path: {output_path}")
         print(f"Source log written: {source_log_path}")
         print(f"Last message: {last_message_path}")
+        _notify_pre_market_brief(root, settings, run_date, output_path)
         return 0
 
     print(f"Unknown backend: {backend}", file=sys.stderr)
@@ -444,6 +523,77 @@ def command_feedback(args: argparse.Namespace) -> int:
             handle.write(line + "\n")
     print(f"Feedback appended: {inputs_path}")
     return 0
+
+
+def _text_preview(text: str, *, max_chars: int = 1800) -> str:
+    lines = [line.strip() for line in text.splitlines()]
+    preview_lines = [line for line in lines if line][:24]
+    return "\n".join(preview_lines)[:max_chars]
+
+
+def _html_notification_preview(text: str) -> str:
+    parser = _BriefTextExtractor()
+    parser.feed(text)
+    parser.close()
+    parts = parser.article_parts or parser.parts
+    return _text_preview("\n".join(parts), max_chars=1800)
+
+
+def _html_notification_blocks(text: str) -> list[list[dict[str, str]]]:
+    parser = _BriefTextExtractor()
+    parser.feed(text)
+    parser.close()
+    blocks = parser.article_blocks or parser.blocks
+    return blocks[:24]
+
+
+def _brief_notification_preview(output_path: Path) -> str:
+    if not output_path.exists():
+        return ""
+    text = output_path.read_text(encoding="utf-8")
+    if output_path.suffix.lower() in {".html", ".htm"}:
+        return _html_notification_preview(text)
+    return _text_preview(text)
+
+
+def _brief_notification_blocks(output_path: Path) -> list[list[dict[str, str]]]:
+    if not output_path.exists() or output_path.suffix.lower() not in {".html", ".htm"}:
+        return []
+    return _html_notification_blocks(output_path.read_text(encoding="utf-8"))
+
+
+def _brief_public_url(root: Path, settings: dict[str, Any], output_path: Path) -> str:
+    base_url = str(settings.get("web", {}).get("brief_base_url", "")).strip()
+    if not base_url:
+        return ""
+    output_dir = resolve_path(root, settings.get("output_dir", "briefs"))
+    try:
+        relative = output_path.resolve().relative_to(output_dir.resolve())
+    except ValueError:
+        relative = Path(output_path.name)
+    quoted = "/".join(quote(part) for part in relative.parts)
+    return urljoin(base_url.rstrip("/") + "/", quoted)
+
+
+def _notify_pre_market_brief(
+    root: Path,
+    settings: dict[str, Any],
+    run_date: date,
+    output_path: Path,
+) -> None:
+    outbox = build_outbox(root, settings)
+    outbox.deliver(
+        {
+            "type": "pre_market_brief",
+            "date": run_date.isoformat(),
+            "output": str(output_path),
+            "format": output_path.suffix.lstrip("."),
+            "brief_url": _brief_public_url(root, settings, output_path),
+            "generated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(timespec="seconds"),
+            "preview": _brief_notification_preview(output_path),
+            "preview_blocks": _brief_notification_blocks(output_path),
+        }
+    )
 
 
 def _store_and_outbox(root: Path, settings: dict[str, Any]) -> tuple[PortfolioStore, Any]:

@@ -69,6 +69,30 @@ class FeishuPayloadFormattingTests(unittest.TestCase):
         post = payload["content"]["post"]["zh_cn"]
         self.assertIn("盘后复盘", post["title"])
 
+    def test_format_pre_market_brief(self) -> None:
+        message = {
+            "type": "pre_market_brief",
+            "date": "2026-06-09",
+            "output": "briefs/2026-06-09-brief.html",
+            "brief_url": "https://example.com/reports/2026-06-09-brief.html",
+            "preview": "每日研究简报\n手机端可读摘要",
+            "preview_blocks": [
+                [{"tag": "text", "text": "来源链接："}, {"tag": "a", "text": "Yahoo Finance 原文", "href": "https://finance.yahoo.com/quote/NVDA"}]
+            ],
+        }
+        payload = self.port._build_payload(message)
+        self.assertEqual(payload["msg_type"], "post")
+        post = payload["content"]["post"]["zh_cn"]
+        self.assertIn("盘前简报", post["title"])
+        rendered = "\n".join(token.get("text", "") for block in post["content"] for token in block)
+        self.assertIn("摘要预览", rendered)
+        self.assertIn("Yahoo Finance 原文", rendered)
+        self.assertNotIn("本地归档", rendered)
+        self.assertNotIn("briefs/2026-06-09-brief.html", rendered)
+        links = [token for block in post["content"] for token in block if token.get("tag") == "a"]
+        self.assertEqual(links[0]["href"], "https://example.com/reports/2026-06-09-brief.html")
+        self.assertEqual(links[1]["href"], "https://finance.yahoo.com/quote/NVDA")
+
     def test_format_unknown_falls_back_to_text(self) -> None:
         message = {"type": "something_else", "key": "value"}
         payload = self.port._build_payload(message)

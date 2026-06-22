@@ -38,6 +38,7 @@ class EvidenceItem:
     matched_topics: List[str] = field(default_factory=list)
     matched_tickers: List[str] = field(default_factory=list)
     evidence_level: str = "summary"
+    display_url: str = ""
 
 
 @dataclass
@@ -261,6 +262,10 @@ def canonical_url(value: str) -> str:
     return urlunsplit((split.scheme.lower(), split.netloc.lower(), split.path, split.query, ""))
 
 
+def evidence_display_url(item: EvidenceItem) -> str:
+    return item.display_url.strip() or item.url
+
+
 def dedupe_evidence(items: Iterable[EvidenceItem], max_items: int) -> List[EvidenceItem]:
     seen_urls: set[str] = set()
     seen_titles: set[str] = set()
@@ -351,7 +356,8 @@ def evidence_pack_markdown(pack: EvidencePack, max_content_chars: int = 1600) ->
                 f"### {item.id}: {item.title}",
                 f"- Source: {item.source_name} ({item.source_type})",
                 f"- Published: {item.published_at}",
-                f"- URL: {item.url}",
+                f"- URL: {evidence_display_url(item)}",
+                *([f"- Data URL: {item.url}"] if item.url != evidence_display_url(item) else []),
                 f"- Evidence level: {item.evidence_level}",
                 f"- Matched topics: {', '.join(item.matched_topics) or '(none)'}",
                 f"- Matched tickers: {', '.join(item.matched_tickers) or '(none)'}",
@@ -386,7 +392,7 @@ def evidence_review_queue_markdown(pack: EvidencePack) -> str:
         "",
     ]
     for item in review_items:
-        parts.append(f"- **{item.id} · {item.title}** — [{item.source_name}]({item.url})")
+        parts.append(f"- **{item.id} · {item.title}** — [{item.source_name}]({evidence_display_url(item)})")
     return "\n".join(parts).strip() + "\n"
 
 
@@ -703,7 +709,7 @@ def _append_information_item(
         parts.append(f"- **相关代码：** {', '.join(item.matched_tickers)}")
     parts.extend(
         [
-            f"- **来源链接：** [{item.source_name} 原文]({item.url})",
+            f"- **来源链接：** [{item.source_name} 原文]({evidence_display_url(item)})",
             f"- **时间：** {_display_datetime_readable(item.published_at, timezone_name)}",
             "",
         ]
@@ -954,7 +960,7 @@ def model_summary_brief_markdown(
             )
             continue
         evidence_links = ", ".join(
-            f"[{evidence_id}]({items_by_id[evidence_id].url})"
+            f"[{evidence_id}]({evidence_display_url(items_by_id[evidence_id])})"
             for evidence_id in action.evidence_ids
             if evidence_id in items_by_id
         ) or "无"
@@ -1017,10 +1023,15 @@ def source_log_markdown(pack: EvidencePack) -> str:
     parts.extend(["", "## 来源明细", ""])
     for item in pack.items:
         tickers = f"；相关代码：{', '.join(item.matched_tickers)}" if item.matched_tickers else ""
+        data_link = (
+            f"；[数据复核链接]({item.url})"
+            if item.url != evidence_display_url(item)
+            else ""
+        )
         parts.append(
-            f"- [{item.id} · {item.title}]({item.url}) · "
+            f"- [{item.id} · {item.title}]({evidence_display_url(item)}) · "
             f"{_source_type_label(item.source_type)} · {_evidence_level_label(item.evidence_level)} · "
-            f"{_display_datetime_readable(item.published_at, pack.timezone)}{tickers}"
+            f"{_display_datetime_readable(item.published_at, pack.timezone)}{tickers}{data_link}"
         )
     return "\n".join(parts).strip() + "\n"
 
@@ -1055,7 +1066,12 @@ def evidence_only_brief_markdown(
 
 
 def validate_summary_citations(text: str, pack: EvidencePack) -> List[str]:
-    allowed = {canonical_url(item.url) for item in pack.items}
+    allowed = {
+        canonical_url(url)
+        for item in pack.items
+        for url in {item.url, evidence_display_url(item)}
+        if url
+    }
     used = {canonical_url(url.rstrip(".,;:`'\"")) for url in URL_RE.findall(text)}
     errors = [f"Unverified citation URL: {url}" for url in sorted(used - allowed)]
     if pack.items and not used:
