@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time as time_module
 from datetime import date, datetime
@@ -15,7 +16,14 @@ except ImportError:  # pragma: no cover - Python 3.8 fallback
 
 from .collectors import HttpClient, collect_evidence, resolve_research_window, window_duration_hours
 from .agent_debate import backend_invoker, run_agent_debate
-from .config import ensure_dirs, find_project_root, load_settings, read_inputs, resolve_path
+from .config import (
+    ensure_dirs,
+    find_project_root,
+    load_market_settings,
+    load_settings,
+    read_inputs,
+    resolve_path,
+)
 from .env import load_dotenv
 from .evidence import (
     EvidencePack,
@@ -42,7 +50,15 @@ from .portfolio_store import PortfolioStore
 from .prompting import build_openai_messages
 from .scheduler import ScheduleError, local_now, next_run_at, seconds_until
 from .review import build_daily_review
-from .writer import output_path_for, run_stamp, runs_dir_for, source_log_path_for, write_json, write_text
+from .writer import (
+    markdown_to_html,
+    output_path_for,
+    run_stamp,
+    runs_dir_for,
+    source_log_path_for,
+    write_json,
+    write_text,
+)
 from .zhipu_runner import ZhipuError, run_zhipu
 
 
@@ -63,6 +79,55 @@ def add_common_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--date", help="Run date in YYYY-MM-DD format.")
     parser.add_argument("--output", help="Override output brief path.")
     parser.add_argument("--model", help="Override backend model for this run.")
+    parser.add_argument("--market", choices=["a_share", "us_equities"], help="Generate a market-specific brief.")
+
+
+def _market_filtered_inputs(inputs: dict[str, Any], market: str | None) -> dict[str, Any]:
+    if market is None:
+        return inputs
+
+    def matches_market(value: Any) -> bool:
+        text = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
+        if market == "us_equities":
+            return "A股" not in text
+        return "美股" not in text and "S&P 500" not in text and "Nasdaq" not in text
+
+    sources = json.loads(json.dumps(inputs.get("sources", {}), ensure_ascii=False))
+    portfolios = sources.get("portfolios", {})
+    if isinstance(portfolios, dict):
+        for name in ("a_share", "us_equities"):
+            if name != market and isinstance(portfolios.get(name), dict):
+                portfolios[name]["holdings"] = []
+    market_scope = sources.get("market_scope", {})
+    if isinstance(market_scope, dict):
+        sources["market_scope"] = {market: market_scope.get(market, {})}
+    focus_topics = sources.get("focus_topics", [])
+    if isinstance(focus_topics, list):
+        for topic in focus_topics:
+            if not isinstance(topic, dict):
+                continue
+            if isinstance(topic.get("segments"), list):
+                topic["segments"] = [segment for segment in topic["segments"] if matches_market(segment)]
+            if isinstance(topic.get("instruments"), list):
+                topic["instruments"] = [
+                    instrument for instrument in topic["instruments"] if matches_market(instrument)
+                ]
+    collectors = sources.get("collectors", {})
+    if isinstance(collectors, dict):
+        yahoo = collectors.get("yahoo_market_snapshots", {})
+        if isinstance(yahoo, dict) and isinstance(yahoo.get("instruments"), list):
+            yahoo["instruments"] = [
+                instrument for instrument in yahoo["instruments"] if matches_market(instrument)
+            ]
+    filtered = dict(inputs)
+    filtered["sources"] = sources
+    return filtered
+
+
+def _settings_for_market(root: Path, settings: dict[str, Any], market: str | None) -> dict[str, Any]:
+    if market is None:
+        return settings
+    return load_market_settings(root, settings, market)
 
 
 def write_model_brief(
@@ -80,6 +145,7 @@ def write_model_brief(
     run_date: date,
     holdings: Sequence[dict[str, Any]],
     focus_topics: Sequence[dict[str, Any]],
+    market: str | None = None,
 ) -> int:
     write_text(prompt_path, f"# System\n\n{system}\n\n# User\n\n{user}\n")
     write_json(runs_dir / f"{stamp}-request.json", payload)
@@ -110,6 +176,7 @@ def write_model_brief(
         holdings=holdings,
         focus_topics=focus_topics,
         portfolio_actions=model_brief.portfolio_actions,
+        market=market,
     )
     write_text(runs_dir / f"{stamp}-brief-source.md", brief_text)
     source_log_path = source_log_path_for(output_path)
@@ -122,19 +189,39 @@ def write_model_brief(
         for error in validation_errors:
             print(f"- {error}", file=sys.stderr)
 
-    write_text(output_path, brief_text)
-    print(f"Brief written: {output_path}")
+    delivery_path = _write_brief_outputs(output_path, brief_text)
+    print(f"Brief written: {delivery_path}")
     print(f"Source log written: {source_log_path}")
     return 0
+
+
+def _write_brief_outputs(output_path: Path, brief_text: str) -> Path:
+    title = brief_text.splitlines()[0].lstrip("# ").strip() if brief_text.splitlines() else "Market Analyzer Brief"
+    html_text = markdown_to_html(brief_text, title=title)
+    if output_path.suffix.lower() == ".html":
+        write_text(output_path.with_suffix(".md"), brief_text)
+        write_text(output_path, html_text)
+        return output_path
+    write_text(output_path, brief_text)
+    html_path = output_path.with_suffix(".html")
+    write_text(html_path, html_text)
+    return html_path
+
+
+def _brief_delivery_path(output_path: Path) -> Path:
+    if output_path.suffix.lower() == ".html":
+        return output_path
+    html_path = output_path.with_suffix(".html")
+    return html_path if html_path.exists() else output_path
 
 
 def command_run(args: argparse.Namespace) -> int:
     root = find_project_root()
     load_dotenv(root / ".env")
-    settings = load_settings(root)
+    settings = _settings_for_market(root, load_settings(root), getattr(args, "market", None))
     backend = args.backend or settings.get("backend", "zhipu")
     run_date = parse_date(args.date, str(settings.get("timezone", "Asia/Shanghai")))
-    inputs = read_inputs(root, settings)
+    inputs = _market_filtered_inputs(read_inputs(root, settings), getattr(args, "market", None))
     holdings = configured_portfolio_holdings(inputs.get("sources", {}))
     focus_topics = configured_focus_topics(inputs.get("sources", {}))
     output_path = output_path_for(root, settings, run_date, args.output)
@@ -166,7 +253,12 @@ def command_run(args: argparse.Namespace) -> int:
 
     model_pack = filter_evidence_pack(pack, {"summary"})
     if backend != "dry-run" and not model_pack.items:
-        brief_text = evidence_only_brief_markdown(pack, run_date, holdings=holdings)
+        brief_text = evidence_only_brief_markdown(
+            pack,
+            run_date,
+            holdings=holdings,
+            market=getattr(args, "market", None),
+        )
         write_text(runs_dir / f"{stamp}-brief-source.md", brief_text)
         source_log_path = source_log_path_for(output_path)
         write_text(runs_dir / f"{stamp}-source-log.md", source_log_markdown(pack))
@@ -176,10 +268,10 @@ def command_run(args: argparse.Namespace) -> int:
             write_json(runs_dir / f"{stamp}-validation-errors.json", validation_errors)
             print("Evidence-only brief failed citation validation.", file=sys.stderr)
             return 2
-        write_text(output_path, brief_text)
-        print(f"Brief written without model inference: {output_path}")
+        delivery_path = _write_brief_outputs(output_path, brief_text)
+        print(f"Brief written without model inference: {delivery_path}")
         print(f"Source log written: {source_log_path}")
-        _notify_pre_market_brief(root, settings, run_date, output_path)
+        _notify_pre_market_brief(root, settings, run_date, delivery_path)
         return 0
 
     if backend != "dry-run":
@@ -228,9 +320,10 @@ def command_run(args: argparse.Namespace) -> int:
             run_date=run_date,
             holdings=holdings,
             focus_topics=focus_topics,
+            market=getattr(args, "market", None),
         )
         if exit_code == 0:
-            _notify_pre_market_brief(root, settings, run_date, output_path)
+            _notify_pre_market_brief(root, settings, run_date, _brief_delivery_path(output_path))
         return exit_code
 
     if backend == "zhipu":
@@ -259,9 +352,10 @@ def command_run(args: argparse.Namespace) -> int:
             run_date=run_date,
             holdings=holdings,
             focus_topics=focus_topics,
+            market=getattr(args, "market", None),
         )
         if exit_code == 0:
-            _notify_pre_market_brief(root, settings, run_date, output_path)
+            _notify_pre_market_brief(root, settings, run_date, _brief_delivery_path(output_path))
         return exit_code
 
     print(f"Unknown backend: {backend}", file=sys.stderr)
@@ -292,11 +386,22 @@ def _notify_pre_market_brief(
     output_path: Path,
 ) -> None:
     outbox = build_outbox(root, settings)
+    base_url = os.environ.get("MARKET_ANALYZER_AGENTS_BRIEF_BASE_URL", "").strip().rstrip("/")
+    url = ""
+    output_dir = resolve_path(root, "briefs")
+    try:
+        relative_output = output_path.relative_to(output_dir)
+    except ValueError:
+        relative_output = output_path.name
+    if base_url:
+        url = f"{base_url}/{relative_output.as_posix() if isinstance(relative_output, Path) else relative_output}"
     outbox.deliver(
         {
             "type": "pre_market_brief",
+            "market": settings.get("active_market"),
             "date": run_date.isoformat(),
             "output": str(output_path),
+            "url": url,
             "generated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(timespec="seconds"),
         }
     )
@@ -311,7 +416,7 @@ def _store_and_outbox(root: Path, settings: dict[str, Any]) -> tuple[PortfolioSt
 
 def command_market_status(args: argparse.Namespace) -> int:
     root = find_project_root()
-    settings = load_settings(root)
+    settings = load_market_settings(root, load_settings(root), args.market)
     market_settings = settings.get("markets", {}).get(args.market, {})
     status = market_status(
         args.market,
@@ -326,7 +431,7 @@ def command_market_status(args: argparse.Namespace) -> int:
 def command_intraday(args: argparse.Namespace) -> int:
     root = find_project_root()
     load_dotenv(root / ".env")
-    settings = load_settings(root)
+    settings = load_market_settings(root, load_settings(root), args.market)
     inputs = read_inputs(root, settings)
     holdings = [
         holding for holding in configured_portfolio_holdings(inputs.get("sources", {}))
@@ -465,44 +570,90 @@ def _run_once_from_schedule(args: argparse.Namespace) -> int:
         date=args.date,
         output=args.output,
         model=args.model,
+        market=getattr(args, "market", None),
     )
     return command_run(run_args)
+
+
+def _configured_brief_markets(settings: dict[str, Any], requested_market: str | None = None) -> list[str]:
+    if requested_market:
+        return [requested_market]
+    paths = settings.get("market_config_paths", {})
+    if isinstance(paths, dict):
+        markets = [market for market in ("a_share", "us_equities") if market in paths]
+        if markets:
+            return markets
+    return []
+
+
+def _run_once_for_market(args: argparse.Namespace, market: str) -> int:
+    market_args = argparse.Namespace(**vars(args))
+    market_args.market = market
+    return _run_once_from_schedule(market_args)
 
 
 def command_schedule(args: argparse.Namespace) -> int:
     root = find_project_root()
     load_dotenv(root / ".env")
     settings = load_settings(root)
+    brief_markets = _configured_brief_markets(settings, getattr(args, "market", None))
     if args.once:
-        return _run_once_from_schedule(args)
+        if not brief_markets:
+            return _run_once_from_schedule(args)
+        exit_code = 0
+        for market in brief_markets:
+            exit_code = max(exit_code, _run_once_for_market(args, market))
+        return exit_code
 
-    schedule = settings.get("schedule", {})
-    if args.run_on_start or bool(schedule.get("run_on_start", False)):
-        exit_code = _run_once_from_schedule(args)
-        if exit_code != 0:
-            print(f"Scheduled startup run failed with exit code {exit_code}.", file=sys.stderr)
+    if not brief_markets:
+        brief_markets = [None]  # type: ignore[list-item]
+
+    for market in brief_markets:
+        market_settings = _settings_for_market(root, settings, market)
+        schedule = market_settings.get("schedule", {})
+        if args.run_on_start or bool(schedule.get("run_on_start", False)):
+            exit_code = _run_once_for_market(args, market) if market else _run_once_from_schedule(args)
+            if exit_code != 0:
+                print(f"Scheduled startup run failed with exit code {exit_code}.", file=sys.stderr)
 
     print("Scheduler started. Press Ctrl+C to stop.", flush=True)
+    next_targets: dict[str, datetime] = {}
     while True:
         try:
             settings = load_settings(root)
             now = local_now(str(settings.get("timezone", "Asia/Shanghai")))
-            target = next_run_at(now, settings)
-            wait_seconds = seconds_until(target, now)
+            current_markets = _configured_brief_markets(settings, getattr(args, "market", None)) or [None]  # type: ignore[list-item]
+            for market in current_markets:
+                key = market or "default"
+                market_settings = _settings_for_market(root, settings, market)
+                if key not in next_targets:
+                    next_targets[key] = next_run_at(now, market_settings)
+                    label = market or "default"
+                    print(
+                        f"Next scheduled run for {label}: {next_targets[key].isoformat(timespec='seconds')}",
+                        flush=True,
+                    )
+                if next_targets[key] <= now:
+                    exit_code = _run_once_for_market(args, market) if market else _run_once_from_schedule(args)
+                    if exit_code != 0:
+                        print(f"Scheduled run failed with exit code {exit_code}.", file=sys.stderr)
+                    next_targets[key] = next_run_at(now, market_settings)
+                    label = market or "default"
+                    print(
+                        f"Next scheduled run for {label}: {next_targets[key].isoformat(timespec='seconds')}",
+                        flush=True,
+                    )
+            target = min(next_targets.values())
+            wait_seconds = min(float(args.tick_seconds), seconds_until(target, now)) if hasattr(args, "tick_seconds") else seconds_until(target, now)
         except ScheduleError as exc:
             print(f"Invalid schedule configuration: {exc}", file=sys.stderr)
             return 2
 
-        print(f"Next scheduled run: {target.isoformat(timespec='seconds')}", flush=True)
         try:
             time_module.sleep(wait_seconds)
         except KeyboardInterrupt:
             print("Scheduler stopped.")
             return 130
-
-        exit_code = _run_once_from_schedule(args)
-        if exit_code != 0:
-            print(f"Scheduled run failed with exit code {exit_code}.", file=sys.stderr)
 
 
 def _configured_intraday_markets(
@@ -534,21 +685,23 @@ def command_service(args: argparse.Namespace) -> int:
     load_dotenv(root / ".env")
     settings = load_settings(root)
     inputs = read_inputs(root, settings)
-    markets = _configured_intraday_markets(inputs, args.markets)
-    if not markets:
-        print("No configured intraday markets. Add holdings or pass --markets.", file=sys.stderr)
+    intraday_markets = _configured_intraday_markets(inputs, args.markets)
+    brief_markets = [] if args.no_briefs else (args.markets or _configured_brief_markets(settings))
+    if not intraday_markets and not brief_markets:
+        print("No configured markets. Add holdings, pass --markets, or configure market schedules.", file=sys.stderr)
         return 2
 
-    next_brief_target = None
+    next_brief_targets: dict[str, datetime] = {}
     last_intraday_poll: dict[str, float] = {}
     next_intraday_allowed: dict[str, float] = {}
     failure_backoff: dict[str, float] = {}
-    market_health: dict[str, dict[str, Any]] = {market: {"state": "starting"} for market in markets}
+    market_health: dict[str, dict[str, Any]] = {market: {"state": "starting"} for market in intraday_markets}
     last_retention_day = None
     print(
         "Service started. "
         f"Brief schedule enabled={not args.no_briefs}; "
-        f"intraday markets={', '.join(markets)}.",
+        f"brief markets={', '.join(brief_markets) if brief_markets else 'none'}; "
+        f"intraday markets={', '.join(intraday_markets) if intraday_markets else 'none'}.",
         flush=True,
     )
 
@@ -569,22 +722,26 @@ def command_service(args: argparse.Namespace) -> int:
                 last_retention_day = today
                 print(f"Retention cleanup complete: {json.dumps(pruned, ensure_ascii=False)}", flush=True)
             if not args.no_briefs:
-                if next_brief_target is None or next_brief_target <= now:
-                    if next_brief_target is not None:
-                        exit_code = _run_once_from_schedule(args)
-                        if exit_code != 0:
-                            print(
-                                f"Scheduled brief failed with exit code {exit_code}.",
-                                file=sys.stderr,
-                            )
-                    next_brief_target = next_run_at(now, settings)
-                    print(
-                        f"Next scheduled brief: {next_brief_target.isoformat(timespec='seconds')}",
-                        flush=True,
-                    )
+                brief_markets = args.markets or _configured_brief_markets(settings)
+                for market in brief_markets:
+                    market_settings = load_market_settings(root, settings, market)
+                    next_target = next_brief_targets.get(market)
+                    if next_target is None or next_target <= now:
+                        if next_target is not None:
+                            exit_code = _run_once_for_market(args, market)
+                            if exit_code != 0:
+                                print(
+                                    f"Scheduled brief failed for {market} with exit code {exit_code}.",
+                                    file=sys.stderr,
+                                )
+                        next_brief_targets[market] = next_run_at(now, market_settings)
+                        print(
+                            f"Next scheduled brief for {market}: {next_brief_targets[market].isoformat(timespec='seconds')}",
+                            flush=True,
+                        )
 
-            for market in markets:
-                market_settings = settings.get("markets", {}).get(market, {})
+            for market in intraday_markets:
+                market_settings = load_market_settings(root, settings, market).get("markets", {}).get(market, {})
                 status = market_status(
                     market,
                     holidays=market_settings.get("holidays", []),
@@ -648,7 +805,9 @@ def command_service(args: argparse.Namespace) -> int:
                     "status": "running",
                     "updated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(),
                     "brief_schedule_enabled": not args.no_briefs,
-                    "next_brief_target": next_brief_target.isoformat() if next_brief_target else None,
+                    "next_brief_targets": {
+                        market: target.isoformat() for market, target in next_brief_targets.items()
+                    },
                     "markets": market_health,
                 },
             )

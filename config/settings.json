@@ -8,6 +8,10 @@
   "max_items": 12,
   "context_path": "config/research-context.md",
   "sources_path": "config/sources.json",
+  "market_config_paths": {
+    "a_share": "config/markets/a_share.json",
+    "us_equities": "config/markets/us_equities.json"
+  },
   "output_dir": "briefs",
   "runs_dir": "runs",
   "state": {

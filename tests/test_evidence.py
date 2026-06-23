@@ -65,6 +65,34 @@ class EvidenceContractTests(unittest.TestCase):
         self.assertNotIn(title_only.url, evidence_only_brief_markdown(pack, date(2026, 6, 4)))
         self.assertIn(title_only.url, source_log_markdown(pack))
 
+    def test_market_brief_title_and_market_overview_are_market_specific(self) -> None:
+        pack = EvidencePack(
+            "2026-06-04T08:00:00+00:00",
+            24,
+            items=[
+                EvidenceItem(
+                    **{
+                        **evidence("https://finance.yahoo.com/quote/000001.SS").__dict__,
+                        "title": "上证指数快照",
+                        "matched_topics": ["A股整体市场"],
+                    }
+                ),
+                EvidenceItem(
+                    **{
+                        **evidence("https://finance.yahoo.com/quote/%5EGSPC").__dict__,
+                        "title": "S&P 500 snapshot",
+                        "matched_topics": ["美股整体市场"],
+                    }
+                ),
+            ],
+        )
+
+        rendered = evidence_only_brief_markdown(pack, date(2026, 6, 4), market="us_equities")
+
+        self.assertIn("# 美股盘前研究简报 - 2026-06-04", rendered)
+        self.assertIn("美股市场概览与宏观驱动", rendered)
+        self.assertNotIn("A股市场概览", rendered)
+
     def test_generated_citations_must_come_from_evidence_pack(self) -> None:
         pack = EvidencePack("2026-06-04T08:00:00+00:00", 24, items=[evidence()])
         self.assertEqual(

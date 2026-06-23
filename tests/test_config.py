@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from marketanalyzeragents.config import deep_merge, load_settings
+from marketanalyzeragents.config import deep_merge, load_market_settings, load_settings
 
 
 class ConfigTests(unittest.TestCase):
@@ -37,6 +37,32 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(settings["schedule"]["run_on_start"])
         self.assertEqual(settings["service"]["health_path"], "state/custom-health.json")
         self.assertEqual(settings["service"]["retention_days"], 30)
+
+    def test_market_settings_load_independent_schedule_and_calendar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config" / "markets").mkdir(parents=True)
+            (root / "config" / "settings.json").write_text(
+                '{"market_config_paths": {"a_share": "config/markets/a_share.json"}}',
+                encoding="utf-8",
+            )
+            (root / "config" / "markets" / "a_share.json").write_text(
+                """
+                {
+                  "schedule": {"mode": "daily", "time": "09:00"},
+                  "market": {"holidays": ["2026-10-01"], "poll_interval_seconds": 30},
+                  "output_dir": "briefs/a_share"
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            settings = load_market_settings(root, load_settings(root), "a_share")
+
+        self.assertEqual(settings["schedule"]["time"], "09:00")
+        self.assertEqual(settings["markets"]["a_share"]["holidays"], ["2026-10-01"])
+        self.assertEqual(settings["markets"]["a_share"]["poll_interval_seconds"], 30)
+        self.assertEqual(settings["output_dir"], "briefs/a_share")
 
 if __name__ == "__main__":
     unittest.main()

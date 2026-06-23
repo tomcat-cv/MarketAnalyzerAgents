@@ -837,6 +837,7 @@ def model_summary_brief_markdown(
     holdings: Sequence[Mapping[str, Any]] = (),
     focus_topics: Sequence[Mapping[str, Any]] = (),
     portfolio_actions: Sequence[PortfolioAction] = (),
+    market: str | None = None,
 ) -> str:
     summary_items = [item for item in pack.items if item.evidence_level == "summary"]
     holding_tickers = {
@@ -866,8 +867,10 @@ def model_summary_brief_markdown(
     for item in pack.items:
         level_counts[item.evidence_level] = level_counts.get(item.evidence_level, 0) + 1
 
+    market_label = {"a_share": "A股", "us_equities": "美股"}.get(str(market or ""), "")
+    title = f"{market_label}盘前研究简报" if market_label else "每日研究简报"
     parts = [
-        f"# 每日研究简报 - {run_date.isoformat()}",
+        f"# {title} - {run_date.isoformat()}",
         "",
         f"- **信息窗口：** {_window_description(pack)}",
         "- **阅读说明：** 每条信息均附原始链接；完整采集覆盖和来源日志已单独保存。",
@@ -875,24 +878,26 @@ def model_summary_brief_markdown(
         "## 1. 市场概览",
         "",
     ]
-    _append_information_group(
-        parts,
-        heading="A股市场概览",
-        items=a_share_market_items,
-        summaries=summaries,
-        analyses=analyses,
-        timezone_name=pack.timezone,
-        empty_message="本窗口内，已启用信源未采集到A股市场概览条目；这不代表市场没有发生事件。",
-    )
-    _append_information_group(
-        parts,
-        heading="美股市场概览与宏观驱动",
-        items=us_market_items,
-        summaries=summaries,
-        analyses=analyses,
-        timezone_name=pack.timezone,
-        empty_message="本窗口内，已启用信源未采集到美股整体或宏观驱动条目；这不代表市场没有发生事件。",
-    )
+    if market in {None, "a_share"}:
+        _append_information_group(
+            parts,
+            heading="A股市场概览",
+            items=a_share_market_items,
+            summaries=summaries,
+            analyses=analyses,
+            timezone_name=pack.timezone,
+            empty_message="本窗口内，已启用信源未采集到A股市场概览条目；这不代表市场没有发生事件。",
+        )
+    if market in {None, "us_equities"}:
+        _append_information_group(
+            parts,
+            heading="美股市场概览与宏观驱动",
+            items=us_market_items,
+            summaries=summaries,
+            analyses=analyses,
+            timezone_name=pack.timezone,
+            empty_message="本窗口内，已启用信源未采集到美股整体或宏观驱动条目；这不代表市场没有发生事件。",
+        )
 
     _append_focus_topic_radar(
         parts,
@@ -1041,6 +1046,7 @@ def evidence_only_brief_markdown(
     run_date: date,
     *,
     holdings: Sequence[Mapping[str, Any]] = (),
+    market: str | None = None,
 ) -> str:
     actions = [
         PortfolioAction(
@@ -1062,6 +1068,7 @@ def evidence_only_brief_markdown(
         holdings=holdings,
         focus_topics=[],
         portfolio_actions=actions,
+        market=market,
     )
 
 

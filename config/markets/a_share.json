@@ -1,0 +1,17 @@
+{
+  "sources_path": "config/sources.json",
+  "output_dir": "briefs/a_share",
+  "runs_dir": "runs/a_share",
+  "schedule": {
+    "mode": "daily",
+    "time": "09:00",
+    "interval_minutes": 1440,
+    "run_on_start": false
+  },
+  "market": {
+    "holidays": [],
+    "extra_open_dates": [],
+    "early_closes": {},
+    "poll_interval_seconds": 60
+  }
+}

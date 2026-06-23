@@ -17,6 +17,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "max_items": 12,
     "context_path": "config/research-context.md",
     "sources_path": "config/sources.json",
+    "market_config_paths": {
+        "a_share": "config/markets/a_share.json",
+        "us_equities": "config/markets/us_equities.json",
+    },
     "output_dir": "briefs",
     "runs_dir": "runs",
     "state": {
@@ -134,6 +138,31 @@ def load_settings(root: Path) -> Dict[str, Any]:
     if os.environ.get("MARKET_ANALYZER_AGENTS_RETENTION_DAYS"):
         settings["service"]["retention_days"] = int(os.environ["MARKET_ANALYZER_AGENTS_RETENTION_DAYS"])
 
+    return settings
+
+
+def load_market_settings(root: Path, base_settings: Mapping[str, Any], market: str) -> Dict[str, Any]:
+    if market not in {"a_share", "us_equities"}:
+        raise ValueError("market must be a_share or us_equities")
+
+    settings = deepcopy(dict(base_settings))
+    paths = settings.get("market_config_paths", {})
+    market_path = paths.get(market) if isinstance(paths, Mapping) else None
+    if not market_path:
+        return settings
+
+    market_config = load_json(resolve_path(root, str(market_path)), {})
+    if not isinstance(market_config, Mapping):
+        return settings
+
+    market_values = market_config.get("market", {})
+    overrides = {key: value for key, value in market_config.items() if key != "market"}
+    settings = deep_merge(settings, overrides)
+    settings["active_market"] = market
+    settings.setdefault("markets", {})
+    if isinstance(market_values, Mapping):
+        current = settings.get("markets", {}).get(market, {})
+        settings["markets"][market] = deep_merge(current, market_values)
     return settings
 
 

@@ -23,14 +23,22 @@ cp .env.example .env
 
 ```bash
 marketanalyzeragents run --backend zhipu
+marketanalyzeragents run --market a_share --backend zhipu
+marketanalyzeragents run --market us_equities --backend zhipu
 marketanalyzeragents run --backend dry-run
 marketanalyzeragents collect
 marketanalyzeragents market-status --market us_equities
 marketanalyzeragents intraday --market us_equities --watch
 marketanalyzeragents operation --market us_equities --symbol NVDA --action buy --quantity 10 --price 100
 marketanalyzeragents review --market us_equities
-marketanalyzeragents service --markets us_equities
+marketanalyzeragents service --markets a_share us_equities
 ```
+
+## 市场配置
+
+- `config/markets/a_share.json`：A 股盘前简报、交易日覆盖和盘中轮询配置；默认北京时间 09:00 生成简报。
+- `config/markets/us_equities.json`：美股盘前简报、交易日覆盖和盘中轮询配置；默认北京时间 20:00 生成简报。
+- `config/sources.json`：共享证据源、公共主题和组合持仓；黄金、白银、宏观等公共主题会被两套市场简报复用。
 
 ## 运行数据
 
