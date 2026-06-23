@@ -361,6 +361,85 @@
         "limit": 5
       },
       {
+        "name": "Federal Register - BIS Export Controls",
+        "url": "https://www.federalregister.gov/documents/search.rss?conditions%5Bagencies%5D%5B%5D=industry-and-security-bureau",
+        "source_type": "primary",
+        "allowed_domains": [
+          "federalregister.gov"
+        ],
+        "topics": [
+          "主题:地缘政治",
+          "主题:宏观风险",
+          "export controls",
+          "semiconductors",
+          "AI infrastructure"
+        ],
+        "limit": 10
+      },
+      {
+        "name": "Federal Register - OFAC Sanctions",
+        "url": "https://www.federalregister.gov/documents/search.rss?conditions%5Bagencies%5D%5B%5D=foreign-assets-control-office",
+        "source_type": "primary",
+        "allowed_domains": [
+          "federalregister.gov"
+        ],
+        "topics": [
+          "主题:地缘政治",
+          "主题:宏观风险",
+          "sanctions",
+          "financial restrictions"
+        ],
+        "limit": 10
+      },
+      {
+        "name": "USTR Press Releases",
+        "url": "https://ustr.gov/about-us/policy-offices/press-office/press-releases/feed",
+        "source_type": "primary",
+        "allowed_domains": [
+          "ustr.gov"
+        ],
+        "topics": [
+          "主题:地缘政治",
+          "主题:宏观风险",
+          "trade policy",
+          "tariffs",
+          "industrial policy"
+        ],
+        "limit": 10
+      },
+      {
+        "name": "EIA Today in Energy",
+        "url": "https://www.eia.gov/rss/todayinenergy.xml",
+        "source_type": "primary",
+        "allowed_domains": [
+          "eia.gov"
+        ],
+        "topics": [
+          "energy",
+          "electricity",
+          "natural gas",
+          "oil"
+        ],
+        "limit": 10
+      },
+      {
+        "name": "EIA Press Releases",
+        "url": "https://www.eia.gov/rss/press_rss.xml",
+        "source_type": "primary",
+        "allowed_domains": [
+          "eia.gov"
+        ],
+        "topics": [
+          "energy",
+          "electricity",
+          "natural gas",
+          "oil"
+        ],
+        "limit": 10
+      }
+    ],
+    "company_rss_feeds": [
+      {
         "name": "NVIDIA Press Releases",
         "url": "https://nvidianews.nvidia.com/cats/press_release.xml",
         "source_type": "primary",
@@ -460,36 +539,6 @@
         ],
         "tickers": [
           "NOK"
-        ],
-        "limit": 10
-      },
-      {
-        "name": "EIA Today in Energy",
-        "url": "https://www.eia.gov/rss/todayinenergy.xml",
-        "source_type": "primary",
-        "allowed_domains": [
-          "eia.gov"
-        ],
-        "topics": [
-          "energy",
-          "electricity",
-          "natural gas",
-          "oil"
-        ],
-        "limit": 10
-      },
-      {
-        "name": "EIA Press Releases",
-        "url": "https://www.eia.gov/rss/press_rss.xml",
-        "source_type": "primary",
-        "allowed_domains": [
-          "eia.gov"
-        ],
-        "topics": [
-          "energy",
-          "electricity",
-          "natural gas",
-          "oil"
         ],
         "limit": 10
       }
