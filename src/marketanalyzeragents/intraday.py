@@ -27,6 +27,11 @@ class JsonlConversationPort:
             handle.write(json.dumps(dict(message), ensure_ascii=False) + "\n")
 
 
+def build_outbox(root: Path, settings: Mapping[str, Any]) -> ConversationPort:
+    state = settings.get("state", {})
+    return JsonlConversationPort(root / state.get("conversation_outbox", "state/conversation-outbox.jsonl"))
+
+
 @dataclass(frozen=True)
 class MarketData:
     quote: Quote

@@ -1,5 +1,7 @@
 import unittest
 import argparse
+import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -65,8 +67,7 @@ class ServiceCommandTests(unittest.TestCase):
                         "state": {
                             "database_path": "state/portfolio.db",
                             "conversation_outbox": "state/outbox.jsonl",
-                        },
-                        "feishu": {"webhook_url": ""},
+                        }
                     }
                 ),
                 encoding="utf-8",
@@ -121,10 +122,10 @@ class ServiceCommandTests(unittest.TestCase):
             previous_cwd = Path.cwd()
             os.chdir(root)
             try:
-                with patch.dict(os.environ, {"FEISHU_WEBHOOK_URL": ""}), patch(
+                with patch(
                     "marketanalyzeragents.cli.fetch_yahoo_market_data",
                     side_effect=fake_fetch,
-                ):
+                ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     exit_code = command_intraday(args)
             finally:
                 os.chdir(previous_cwd)

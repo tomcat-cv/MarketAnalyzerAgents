@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import argparse
-from html.parser import HTMLParser
 import json
 import sys
 import time as time_module
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import quote, urljoin
 
 try:
     from zoneinfo import ZoneInfo
@@ -18,13 +16,10 @@ except ImportError:  # pragma: no cover - Python 3.8 fallback
 from .collectors import HttpClient, collect_evidence, resolve_research_window, window_duration_hours
 from .agent_debate import backend_invoker, run_agent_debate
 from .config import ensure_dirs, find_project_root, load_settings, read_inputs, resolve_path
-from .codex_runner import CodexRunnerError, run_codex_exec
 from .env import load_dotenv
 from .evidence import (
     EvidencePack,
-    configured_a_share_holdings,
     configured_focus_topics,
-    configured_holdings,
     configured_portfolio_holdings,
     evidence_only_brief_markdown,
     evidence_pack_markdown,
@@ -35,90 +30,20 @@ from .evidence import (
     source_log_markdown,
     validate_summary_citations,
 )
-from .html_renderer import render_html_document
 from .intraday import (
+    build_outbox,
     build_suggestion,
     fetch_yahoo_market_data,
     market_history_payload,
 )
 from .market_calendar import market_status
 from .openai_runner import OpenAIError, run_openai
-from .feishu_port import build_outbox
 from .portfolio_store import PortfolioStore
-from .prompting import build_codex_task_prompt, build_openai_messages
+from .prompting import build_openai_messages
 from .scheduler import ScheduleError, local_now, next_run_at, seconds_until
 from .review import build_daily_review
 from .writer import output_path_for, run_stamp, runs_dir_for, source_log_path_for, write_json, write_text
 from .zhipu_runner import ZhipuError, run_zhipu
-
-
-class _BriefTextExtractor(HTMLParser):
-    _BLOCK_TAGS = {"h1", "h2", "h3", "h4", "p", "li", "div", "section"}
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._ignored_depth = 0
-        self._article_depth = 0
-        self._link_href = ""
-        self.parts: list[str] = []
-        self.article_parts: list[str] = []
-        self.blocks: list[list[dict[str, str]]] = []
-        self.article_blocks: list[list[dict[str, str]]] = []
-        self._current_block: list[dict[str, str]] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        classes = {
-            class_name
-            for name, value in attrs
-            if name == "class" and value
-            for class_name in value.split()
-        }
-        if tag in {"script", "style", "noscript"} or "footer-note" in classes:
-            self._ignored_depth += 1
-        if tag == "article":
-            self._flush_block()
-            self._article_depth = 1
-        elif self._article_depth:
-            self._article_depth += 1
-        if tag in self._BLOCK_TAGS:
-            self._flush_block()
-        if tag == "a":
-            attrs_by_name = {name: value for name, value in attrs}
-            self._link_href = str(attrs_by_name.get("href") or "").strip()
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in self._BLOCK_TAGS:
-            self._flush_block()
-        if tag == "a":
-            self._link_href = ""
-        if self._ignored_depth:
-            self._ignored_depth -= 1
-        if self._article_depth:
-            self._article_depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        text = data.strip()
-        if text and not self._ignored_depth:
-            self.parts.append(text)
-            if self._article_depth:
-                self.article_parts.append(text)
-            if self._link_href:
-                self._current_block.append({"tag": "a", "text": text, "href": self._link_href})
-            else:
-                self._current_block.append({"tag": "text", "text": text})
-
-    def close(self) -> None:
-        super().close()
-        self._flush_block()
-
-    def _flush_block(self) -> None:
-        if not self._current_block:
-            return
-        block = self._current_block
-        self.blocks.append(block)
-        if self._article_depth:
-            self.article_blocks.append(block)
-        self._current_block = []
 
 
 def parse_date(value: str | None, timezone: str) -> date:
@@ -132,21 +57,12 @@ def parse_date(value: str | None, timezone: str) -> date:
 def add_common_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--backend",
-        choices=["zhipu", "openai", "codex", "dry-run"],
+        choices=["zhipu", "openai", "dry-run"],
         help="Execution backend. Defaults to config/settings.json.",
     )
     parser.add_argument("--date", help="Run date in YYYY-MM-DD format.")
     parser.add_argument("--output", help="Override output brief path.")
-    parser.add_argument(
-        "--format",
-        choices=["html", "markdown"],
-        help="Output format. Defaults to config/settings.json.",
-    )
     parser.add_argument("--model", help="Override backend model for this run.")
-
-
-def resolve_output_format(args: argparse.Namespace, settings: dict[str, Any]) -> str:
-    return (args.format or settings.get("output_format", "markdown")).strip().lower()
 
 
 def write_model_brief(
@@ -161,7 +77,6 @@ def write_model_brief(
     runs_dir: Path,
     stamp: str,
     output_path: Path,
-    output_format: str,
     run_date: date,
     holdings: Sequence[dict[str, Any]],
     focus_topics: Sequence[dict[str, Any]],
@@ -207,10 +122,7 @@ def write_model_brief(
         for error in validation_errors:
             print(f"- {error}", file=sys.stderr)
 
-    if output_format == "html":
-        write_text(output_path, render_html_document(brief_text))
-    else:
-        write_text(output_path, brief_text)
+    write_text(output_path, brief_text)
     print(f"Brief written: {output_path}")
     print(f"Source log written: {source_log_path}")
     return 0
@@ -221,12 +133,11 @@ def command_run(args: argparse.Namespace) -> int:
     load_dotenv(root / ".env")
     settings = load_settings(root)
     backend = args.backend or settings.get("backend", "zhipu")
-    output_format = resolve_output_format(args, settings)
     run_date = parse_date(args.date, str(settings.get("timezone", "Asia/Shanghai")))
     inputs = read_inputs(root, settings)
     holdings = configured_portfolio_holdings(inputs.get("sources", {}))
     focus_topics = configured_focus_topics(inputs.get("sources", {}))
-    output_path = output_path_for(root, settings, run_date, args.output, output_format)
+    output_path = output_path_for(root, settings, run_date, args.output)
     runs_dir = runs_dir_for(root, settings)
     ensure_dirs([runs_dir, output_path.parent])
 
@@ -265,10 +176,7 @@ def command_run(args: argparse.Namespace) -> int:
             write_json(runs_dir / f"{stamp}-validation-errors.json", validation_errors)
             print("Evidence-only brief failed citation validation.", file=sys.stderr)
             return 2
-        if output_format == "html":
-            write_text(output_path, render_html_document(brief_text))
-        else:
-            write_text(output_path, brief_text)
+        write_text(output_path, brief_text)
         print(f"Brief written without model inference: {output_path}")
         print(f"Source log written: {source_log_path}")
         _notify_pre_market_brief(root, settings, run_date, output_path)
@@ -283,8 +191,6 @@ def command_run(args: argparse.Namespace) -> int:
         settings=settings,
         inputs=inputs,
         run_date=run_date,
-        output_path=output_path,
-        output_format=output_format,
         evidence_markdown=evidence_markdown,
     )
     prompt_path = runs_dir / f"{stamp}-prompt.md"
@@ -319,7 +225,6 @@ def command_run(args: argparse.Namespace) -> int:
             runs_dir=runs_dir,
             stamp=stamp,
             output_path=output_path,
-            output_format=output_format,
             run_date=run_date,
             holdings=holdings,
             focus_topics=focus_topics,
@@ -351,7 +256,6 @@ def command_run(args: argparse.Namespace) -> int:
             runs_dir=runs_dir,
             stamp=stamp,
             output_path=output_path,
-            output_format=output_format,
             run_date=run_date,
             holdings=holdings,
             focus_topics=focus_topics,
@@ -359,51 +263,6 @@ def command_run(args: argparse.Namespace) -> int:
         if exit_code == 0:
             _notify_pre_market_brief(root, settings, run_date, output_path)
         return exit_code
-
-    if backend == "codex":
-        codex_prompt = build_codex_task_prompt(
-            settings=settings,
-            inputs=inputs,
-            run_date=run_date,
-            output_path=output_path,
-            output_format=output_format,
-            evidence_markdown=evidence_pack_markdown(pack),
-        )
-        write_text(prompt_path, codex_prompt)
-        last_message_path = runs_dir / f"{stamp}-codex-last-message.md"
-        try:
-            result = run_codex_exec(
-                root=root,
-                prompt=codex_prompt,
-                settings=settings,
-                last_message_path=last_message_path,
-            )
-        except CodexRunnerError as exc:
-            print(f"Codex backend failed: {exc}", file=sys.stderr)
-            return 2
-
-        write_text(runs_dir / f"{stamp}-codex-stdout.txt", result.stdout)
-        write_text(runs_dir / f"{stamp}-codex-stderr.txt", result.stderr)
-        if result.returncode != 0:
-            print(f"Codex backend exited with {result.returncode}", file=sys.stderr)
-            print(result.stderr, file=sys.stderr)
-            return result.returncode
-        if not output_path.exists():
-            print(f"Codex did not write expected brief: {output_path}", file=sys.stderr)
-            return 2
-        validation_errors = validate_summary_citations(output_path.read_text(encoding="utf-8"), pack)
-        if validation_errors:
-            write_json(runs_dir / f"{stamp}-validation-errors.json", validation_errors)
-            print("Codex brief failed evidence citation validation.", file=sys.stderr)
-            return 2
-        source_log_path = source_log_path_for(output_path)
-        write_text(runs_dir / f"{stamp}-source-log.md", source_log_markdown(pack))
-        write_text(source_log_path, source_log_markdown(pack))
-        print(f"Codex run complete. Expected brief path: {output_path}")
-        print(f"Source log written: {source_log_path}")
-        print(f"Last message: {last_message_path}")
-        _notify_pre_market_brief(root, settings, run_date, output_path)
-        return 0
 
     print(f"Unknown backend: {backend}", file=sys.stderr)
     return 2
@@ -426,155 +285,6 @@ def command_collect(args: argparse.Namespace) -> int:
     return 0 if pack.items else 2
 
 
-def command_doctor(_: argparse.Namespace) -> int:
-    root = find_project_root()
-    loaded = load_dotenv(root / ".env")
-    settings = load_settings(root)
-    inputs = read_inputs(root, settings)
-    runs_dir = runs_dir_for(root, settings)
-    output_path = output_path_for(
-        root,
-        settings,
-        parse_date(None, str(settings.get("timezone", "Asia/Shanghai"))),
-        output_format=str(settings.get("output_format", "markdown")),
-    )
-
-    print(f"Project root: {root}")
-    print(f"Settings backend: {settings.get('backend')}")
-    print(f"Model: {settings.get('model')}")
-    print(f"Output format: {settings.get('output_format')}")
-    print(f"Loaded .env keys: {', '.join(sorted(loaded)) if loaded else '(none)'}")
-    print(f"Context file: {inputs['paths']['context']}")
-    print(f"Sources file: {inputs['paths']['sources']}")
-    print(f"Feedback file: {inputs['paths']['feedback']}")
-    print(f"Prompt overrides file: {inputs['paths']['prompt_extra']}")
-    window_start, window_end, window_mode = resolve_research_window(settings)
-    local_tz = ZoneInfo(str(settings.get("timezone", "Asia/Shanghai"))) if ZoneInfo else None
-    if local_tz:
-        window_start = window_start.astimezone(local_tz)
-        window_end = window_end.astimezone(local_tz)
-    holdings = configured_holdings(inputs.get("sources", {}))
-    a_share_holdings = configured_a_share_holdings(inputs.get("sources", {}))
-    focus_topics = configured_focus_topics(inputs.get("sources", {}))
-    print(f"Freshness window: {window_mode} ({window_start.isoformat()} to {window_end.isoformat()})")
-    print(f"Configured US holdings: {', '.join(value['ticker'] for value in holdings) or '(none)'}")
-    print(
-        "Configured A-share holdings: "
-        f"{', '.join(value['ticker'] for value in a_share_holdings) or '(none; placeholder ready)'}"
-    )
-    print(f"Configured focus topics: {', '.join(value['name'] for value in focus_topics) or '(none)'}")
-    print(f"Runs dir: {runs_dir}")
-    print(f"Next brief path: {output_path}")
-    schedule = settings.get("schedule", {})
-    print(
-        "Schedule: "
-        f"mode={schedule.get('mode', 'daily')}, "
-        f"time={schedule.get('time', '06:00')}, "
-        f"interval_minutes={schedule.get('interval_minutes', 1440)}, "
-        f"run_on_start={schedule.get('run_on_start', False)}"
-    )
-    return 0
-
-
-def command_render(args: argparse.Namespace) -> int:
-    root = find_project_root()
-    input_path = Path(args.input).expanduser()
-    if not input_path.is_absolute():
-        input_path = root / input_path
-    if not input_path.exists():
-        print(f"Input not found: {input_path}", file=sys.stderr)
-        return 2
-
-    output_path = Path(args.output).expanduser() if args.output else input_path.with_suffix(".html")
-    if not output_path.is_absolute():
-        output_path = root / output_path
-
-    markdown = input_path.read_text(encoding="utf-8")
-    write_text(output_path, render_html_document(markdown))
-    print(f"HTML brief written: {output_path}")
-    return 0
-
-
-def command_feedback(args: argparse.Namespace) -> int:
-    root = find_project_root()
-    settings = load_settings(root)
-    feedback_path = Path(inputs_path := read_inputs(root, settings)["paths"]["feedback"])
-    ensure_dirs([feedback_path.parent])
-
-    lines = []
-    if args.like:
-        lines.append("## Likes")
-        lines.extend(f"- {item}" for item in args.like)
-    if args.dislike:
-        lines.append("## Dislikes")
-        lines.extend(f"- {item}" for item in args.dislike)
-    if args.correction:
-        lines.append("## Corrections")
-        lines.extend(f"- {item}" for item in args.correction)
-
-    if not lines:
-        print("Nothing to add. Use --like, --dislike, or --correction.")
-        return 0
-
-    with feedback_path.open("a", encoding="utf-8") as handle:
-        handle.write("\n")
-        handle.write(f"## Feedback {datetime.now().isoformat(timespec='seconds')}\n")
-        for line in lines:
-            handle.write(line + "\n")
-    print(f"Feedback appended: {inputs_path}")
-    return 0
-
-
-def _text_preview(text: str, *, max_chars: int = 1800) -> str:
-    lines = [line.strip() for line in text.splitlines()]
-    preview_lines = [line for line in lines if line][:24]
-    return "\n".join(preview_lines)[:max_chars]
-
-
-def _html_notification_preview(text: str) -> str:
-    parser = _BriefTextExtractor()
-    parser.feed(text)
-    parser.close()
-    parts = parser.article_parts or parser.parts
-    return _text_preview("\n".join(parts), max_chars=1800)
-
-
-def _html_notification_blocks(text: str) -> list[list[dict[str, str]]]:
-    parser = _BriefTextExtractor()
-    parser.feed(text)
-    parser.close()
-    blocks = parser.article_blocks or parser.blocks
-    return blocks[:24]
-
-
-def _brief_notification_preview(output_path: Path) -> str:
-    if not output_path.exists():
-        return ""
-    text = output_path.read_text(encoding="utf-8")
-    if output_path.suffix.lower() in {".html", ".htm"}:
-        return _html_notification_preview(text)
-    return _text_preview(text)
-
-
-def _brief_notification_blocks(output_path: Path) -> list[list[dict[str, str]]]:
-    if not output_path.exists() or output_path.suffix.lower() not in {".html", ".htm"}:
-        return []
-    return _html_notification_blocks(output_path.read_text(encoding="utf-8"))
-
-
-def _brief_public_url(root: Path, settings: dict[str, Any], output_path: Path) -> str:
-    base_url = str(settings.get("web", {}).get("brief_base_url", "")).strip()
-    if not base_url:
-        return ""
-    output_dir = resolve_path(root, settings.get("output_dir", "briefs"))
-    try:
-        relative = output_path.resolve().relative_to(output_dir.resolve())
-    except ValueError:
-        relative = Path(output_path.name)
-    quoted = "/".join(quote(part) for part in relative.parts)
-    return urljoin(base_url.rstrip("/") + "/", quoted)
-
-
 def _notify_pre_market_brief(
     root: Path,
     settings: dict[str, Any],
@@ -587,11 +297,7 @@ def _notify_pre_market_brief(
             "type": "pre_market_brief",
             "date": run_date.isoformat(),
             "output": str(output_path),
-            "format": output_path.suffix.lstrip("."),
-            "brief_url": _brief_public_url(root, settings, output_path),
             "generated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(timespec="seconds"),
-            "preview": _brief_notification_preview(output_path),
-            "preview_blocks": _brief_notification_blocks(output_path),
         }
     )
 
@@ -758,7 +464,6 @@ def _run_once_from_schedule(args: argparse.Namespace) -> int:
         backend=args.backend,
         date=args.date,
         output=args.output,
-        format=args.format,
         model=args.model,
     )
     return command_run(run_args)
@@ -979,20 +684,6 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser = subparsers.add_parser("collect", help="Collect and save a verified Evidence Pack.")
     collect_parser.add_argument("--output", help="Output Evidence Pack JSON path.")
     collect_parser.set_defaults(func=command_collect)
-
-    render_parser = subparsers.add_parser("render", help="Render an existing Markdown brief to HTML.")
-    render_parser.add_argument("input", help="Input Markdown brief path.")
-    render_parser.add_argument("--output", help="Output HTML path. Defaults to input path with .html suffix.")
-    render_parser.set_defaults(func=command_render)
-
-    doctor_parser = subparsers.add_parser("doctor", help="Print configuration diagnostics.")
-    doctor_parser.set_defaults(func=command_doctor)
-
-    feedback_parser = subparsers.add_parser("feedback", help="Append calibration feedback.")
-    feedback_parser.add_argument("--like", action="append", help="Positive preference to remember.")
-    feedback_parser.add_argument("--dislike", action="append", help="Negative preference to remember.")
-    feedback_parser.add_argument("--correction", action="append", help="Correction to remember.")
-    feedback_parser.set_defaults(func=command_feedback)
 
     status_parser = subparsers.add_parser("market-status", help="Show a market session in Beijing time.")
     status_parser.add_argument("--market", choices=["a_share", "us_equities"], required=True)

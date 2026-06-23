@@ -14,15 +14,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "freshness_window": "previous_day_to_run",
     "lookback_hours": 24,
     "language": "zh-CN",
-    "output_format": "html",
     "max_items": 12,
     "context_path": "config/research-context.md",
     "sources_path": "config/sources.json",
-    "feedback_path": "memory/feedback.md",
-    "prompt": {
-        "extra_instructions_path": "config/prompt-overrides.md",
-        "max_extra_instruction_chars": 6000,
-    },
     "output_dir": "briefs",
     "runs_dir": "runs",
     "state": {
@@ -49,7 +43,6 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "interval_minutes": 1440,
         "run_on_start": False,
     },
-    "obsidian": {"vault_path": "", "note_dir": "Market Analyzer Agents"},
     "collectors": {
         "user_agent": "market-analyzer-agents/0.1 research@example.com",
         "timeout_seconds": 30,
@@ -78,9 +71,6 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "max_retries": 2,
         "retry_backoff_seconds": 1.0,
     },
-    "codex": {"model": "", "sandbox": "workspace-write", "extra_writable_dirs": []},
-    "feishu": {"webhook_url": "", "timeout_seconds": 10},
-    "web": {"brief_base_url": ""},
 }
 
 
@@ -126,10 +116,6 @@ def load_settings(root: Path) -> Dict[str, Any]:
             settings["model"] = os.environ["OPENAI_MODEL"]
     if os.environ.get("ZHIPU_API_BASE"):
         settings["zhipu"]["api_base"] = os.environ["ZHIPU_API_BASE"]
-    if os.environ.get("OBSIDIAN_VAULT_PATH"):
-        settings["obsidian"]["vault_path"] = os.environ["OBSIDIAN_VAULT_PATH"]
-    if os.environ.get("MARKET_ANALYZER_AGENTS_PROMPT_PATH"):
-        settings["prompt"]["extra_instructions_path"] = os.environ["MARKET_ANALYZER_AGENTS_PROMPT_PATH"]
     if os.environ.get("MARKET_ANALYZER_AGENTS_SCHEDULE_MODE"):
         settings["schedule"]["mode"] = os.environ["MARKET_ANALYZER_AGENTS_SCHEDULE_MODE"]
     if os.environ.get("MARKET_ANALYZER_AGENTS_SCHEDULE_TIME"):
@@ -143,8 +129,6 @@ def load_settings(root: Path) -> Dict[str, Any]:
             "yes",
             "on",
         }
-    if os.environ.get("MARKET_ANALYZER_AGENTS_BRIEF_BASE_URL"):
-        settings["web"]["brief_base_url"] = os.environ["MARKET_ANALYZER_AGENTS_BRIEF_BASE_URL"].strip()
     if os.environ.get("MARKET_ANALYZER_AGENTS_HEALTH_PATH"):
         settings["service"]["health_path"] = os.environ["MARKET_ANALYZER_AGENTS_HEALTH_PATH"].strip()
     if os.environ.get("MARKET_ANALYZER_AGENTS_RETENTION_DAYS"):
@@ -169,23 +153,13 @@ def read_optional_text(path: Path) -> str:
 def read_inputs(root: Path, settings: Mapping[str, Any]) -> Dict[str, Any]:
     context_path = resolve_path(root, settings["context_path"])
     sources_path = resolve_path(root, settings["sources_path"])
-    feedback_path = resolve_path(root, settings["feedback_path"])
-    prompt_settings = settings.get("prompt", {})
-    prompt_extra_path = resolve_path(
-        root,
-        str(prompt_settings.get("extra_instructions_path", "config/prompt-overrides.md")),
-    )
 
     return {
         "context": read_optional_text(context_path),
         "sources": load_json(sources_path, {}),
-        "feedback": read_optional_text(feedback_path),
-        "prompt_extra": read_optional_text(prompt_extra_path),
         "paths": {
             "context": str(context_path),
             "sources": str(sources_path),
-            "feedback": str(feedback_path),
-            "prompt_extra": str(prompt_extra_path),
         },
     }
 

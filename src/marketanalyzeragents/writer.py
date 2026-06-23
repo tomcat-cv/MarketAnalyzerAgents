@@ -13,22 +13,12 @@ def output_path_for(
     settings: Mapping[str, Any],
     run_date: date,
     override: str | None = None,
-    output_format: str | None = None,
 ) -> Path:
     if override:
         return resolve_path(root, override)
 
-    obsidian = settings.get("obsidian", {})
-    vault_path = str(obsidian.get("vault_path", "")).strip()
-    if vault_path:
-        note_dir = str(obsidian.get("note_dir", "Market Analyzer Agents")).strip()
-        base_dir = Path(vault_path).expanduser() / note_dir
-    else:
-        base_dir = resolve_path(root, settings.get("output_dir", "briefs"))
-
-    selected_format = (output_format or str(settings.get("output_format", "markdown"))).strip().lower()
-    extension = "html" if selected_format == "html" else "md"
-    return base_dir / f"{run_date.isoformat()}-brief.{extension}"
+    base_dir = resolve_path(root, settings.get("output_dir", "briefs"))
+    return base_dir / f"{run_date.isoformat()}-brief.md"
 
 
 def runs_dir_for(root: Path, settings: Mapping[str, Any]) -> Path:

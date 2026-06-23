@@ -11,6 +11,5 @@ services:
       - ./config:/app/config:ro
       - ./briefs:/app/briefs
       - ./runs:/app/runs
-      - ./memory:/app/memory
       - ./state:/app/state
     command: ["marketanalyzeragents", "service"]

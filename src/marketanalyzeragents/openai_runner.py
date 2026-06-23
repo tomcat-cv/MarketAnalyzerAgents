@@ -115,7 +115,7 @@ def run_openai(
     if not api_key:
         raise OpenAIError(
             "OPENAI_API_KEY is missing. Copy .env.example to .env, fill it, "
-            "or run with --backend dry-run / --backend codex."
+            "or run with --backend dry-run."
         )
 
     openai_settings = settings.get("openai", {})

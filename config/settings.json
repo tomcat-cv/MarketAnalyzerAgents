@@ -5,23 +5,14 @@
   "freshness_window": "previous_day_to_run",
   "lookback_hours": 24,
   "language": "zh-CN",
-  "output_format": "html",
   "max_items": 12,
   "context_path": "config/research-context.md",
   "sources_path": "config/sources.json",
-  "feedback_path": "memory/feedback.md",
-  "prompt": {
-    "extra_instructions_path": "config/prompt-overrides.md",
-    "max_extra_instruction_chars": 6000
-  },
   "output_dir": "briefs",
   "runs_dir": "runs",
   "state": {
     "database_path": "state/portfolio.db",
     "conversation_outbox": "state/conversation-outbox.jsonl"
-  },
-  "web": {
-    "brief_base_url": ""
   },
   "markets": {
     "a_share": {
@@ -61,10 +52,6 @@
     "max_backoff_seconds": 300,
     "retention_days": 120
   },
-  "obsidian": {
-    "vault_path": "",
-    "note_dir": "Market Analyzer Agents"
-  },
   "openai": {
     "api_base": "https://api.openai.com/v1",
     "model": "gpt-5.4",
@@ -80,14 +67,5 @@
     "thinking": "enabled",
     "max_retries": 2,
     "retry_backoff_seconds": 1.0
-  },
-  "codex": {
-    "model": "",
-    "sandbox": "workspace-write",
-    "extra_writable_dirs": []
-  },
-  "feishu": {
-    "webhook_url": "",
-    "timeout_seconds": 10
   }
 }
