@@ -1,4 +1,6 @@
 from pathlib import Path
+from datetime import datetime, timezone
+import sqlite3
 import tempfile
 import unittest
 
@@ -9,11 +11,69 @@ from marketanalyzeragents.review import build_daily_review
 
 
 class PortfolioWorkflowTests(unittest.TestCase):
+    def test_store_enables_long_running_sqlite_pragmas_and_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "state.db"
+            store = PortfolioStore(db_path)
+            self.assertEqual(store.connection.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(store.connection.execute("PRAGMA busy_timeout").fetchone()[0], 30000)
+            self.assertEqual(store.connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+            self.assertEqual(store.connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            store.close()
+
+            with sqlite3.connect(db_path) as con:
+                indexes = {
+                    row[0]
+                    for row in con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    ).fetchall()
+                }
+
+        self.assertIn("idx_quotes_recent", indexes)
+        self.assertIn("idx_price_bars_recent", indexes)
+        self.assertIn("idx_suggestions_lookup", indexes)
+        self.assertIn("idx_operations_review", indexes)
+        self.assertIn("idx_agent_discussions_suggestion", indexes)
+
     def test_market_symbols_are_normalized_for_both_markets(self) -> None:
         self.assertEqual(yahoo_symbol("a_share", "600519"), "600519.SS")
         self.assertEqual(yahoo_symbol("a_share", "000001"), "000001.SZ")
         self.assertEqual(yahoo_symbol("a_share", "830799"), "830799.BJ")
         self.assertEqual(yahoo_symbol("us_equities", "nvda"), "NVDA")
+
+    def test_store_prunes_only_old_market_data_not_audit_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PortfolioStore(Path(tmp) / "state.db")
+            store.save_quotes(
+                [
+                    Quote("us_equities", "NVDA", "2026-01-01T00:00:00+00:00", 100),
+                    Quote("us_equities", "NVDA", "2026-06-01T00:00:00+00:00", 120),
+                ]
+            )
+            store.save_suggestion(
+                {
+                    "market": "us_equities",
+                    "symbol": "NVDA",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "action": "观察",
+                    "confidence": "低",
+                    "rationale": "audit record",
+                    "evidence_ids": [],
+                    "invalidation": "new evidence",
+                }
+            )
+
+            pruned = store.prune_market_data(
+                30,
+                now=datetime(2026, 6, 15, tzinfo=timezone.utc),
+            )
+            quote_count = store.connection.execute("SELECT count(*) FROM quotes").fetchone()[0]
+            suggestion_count = store.connection.execute("SELECT count(*) FROM suggestions").fetchone()[0]
+            store.close()
+
+        self.assertEqual(pruned["quotes"], 1)
+        self.assertEqual(quote_count, 1)
+        self.assertEqual(suggestion_count, 1)
 
     def test_external_history_drives_metrics_and_is_persisted(self) -> None:
         class Client:

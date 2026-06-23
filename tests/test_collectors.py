@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
+import urllib.error
 import unittest
+from unittest.mock import patch
 
 from marketanalyzeragents.collectors import (
     collect_evidence,
@@ -7,6 +9,7 @@ from marketanalyzeragents.collectors import (
     collect_rss_items,
     collect_sec_filings,
     collect_yahoo_market_snapshot,
+    HttpClient,
     resolve_research_window,
 )
 
@@ -96,6 +99,32 @@ class CollectorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = FakeClient()
         self.cutoff = datetime(2026, 6, 3, tzinfo=timezone.utc)
+
+    def test_http_client_retries_transient_network_failures(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return None
+
+            def read(self):
+                return b"ok"
+
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append((request, timeout))
+            if len(calls) == 1:
+                raise urllib.error.URLError("temporary dns failure")
+            return Response()
+
+        client = HttpClient("test-agent", max_retries=1, retry_backoff_seconds=0)
+        with patch("marketanalyzeragents.collectors.urllib.request.urlopen", side_effect=fake_urlopen):
+            body = client.request_bytes("https://example.com/feed")
+
+        self.assertEqual(body, b"ok")
+        self.assertEqual(len(calls), 2)
 
     def test_collects_allowed_rss_items(self) -> None:
         items = collect_rss_items(

@@ -27,6 +27,8 @@ class ConfigTests(unittest.TestCase):
                 "MARKET_ANALYZER_AGENTS_INTERVAL_MINUTES": "360",
                 "MARKET_ANALYZER_AGENTS_RUN_ON_START": "true",
                 "MARKET_ANALYZER_AGENTS_PROMPT_PATH": "config/custom-prompt.md",
+                "MARKET_ANALYZER_AGENTS_HEALTH_PATH": "state/custom-health.json",
+                "MARKET_ANALYZER_AGENTS_RETENTION_DAYS": "30",
             }
             with patch.dict(os.environ, overrides, clear=False):
                 settings = load_settings(root)
@@ -35,6 +37,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings["schedule"]["interval_minutes"], 360)
         self.assertTrue(settings["schedule"]["run_on_start"])
         self.assertEqual(settings["prompt"]["extra_instructions_path"], "config/custom-prompt.md")
+        self.assertEqual(settings["service"]["health_path"], "state/custom-health.json")
+        self.assertEqual(settings["service"]["retention_days"], 30)
 
 if __name__ == "__main__":
     unittest.main()

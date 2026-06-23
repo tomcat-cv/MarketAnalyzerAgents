@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -35,10 +36,14 @@ class PriceBar:
 class PortfolioStore:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(path)
+        self.connection = sqlite3.connect(path, timeout=30)
         self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA busy_timeout = 30000")
+        self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.executescript(
             """
+            PRAGMA user_version = 1;
             CREATE TABLE IF NOT EXISTS quotes (
               market TEXT NOT NULL, symbol TEXT NOT NULL, observed_at TEXT NOT NULL,
               price REAL NOT NULL, previous_close REAL, volume REAL, source TEXT NOT NULL,
@@ -64,10 +69,31 @@ class PortfolioStore:
             CREATE TABLE IF NOT EXISTS agent_discussions (
               id INTEGER PRIMARY KEY AUTOINCREMENT, suggestion_id INTEGER NOT NULL,
               turn_index INTEGER NOT NULL, role TEXT NOT NULL,
-              round_number INTEGER NOT NULL, content TEXT NOT NULL
+              round_number INTEGER NOT NULL, content TEXT NOT NULL,
+              FOREIGN KEY (suggestion_id) REFERENCES suggestions(id)
             );
+            CREATE INDEX IF NOT EXISTS idx_quotes_recent
+              ON quotes (market, symbol, observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_price_bars_recent
+              ON price_bars (market, symbol, interval, observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_suggestions_lookup
+              ON suggestions (market, symbol, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_operations_review
+              ON operations (market, operated_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_discussions_suggestion
+              ON agent_discussions (suggestion_id, turn_index);
             """
         )
+        self.connection.commit()
+
+    def close(self) -> None:
+        self.connection.close()
+
+    def __enter__(self) -> "PortfolioStore":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     def save_quotes(self, quotes: Iterable[Quote]) -> None:
         self.connection.executemany(
@@ -149,6 +175,25 @@ class PortfolioStore:
                ORDER BY turn_index""",
             (suggestion_id,),
         ).fetchall()
+
+    def prune_market_data(self, retention_days: int, now: datetime | None = None) -> dict[str, int]:
+        if retention_days <= 0:
+            return {"quotes": 0, "price_bars": 0}
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days)
+        cutoff_text = cutoff.isoformat()
+        quote_cursor = self.connection.execute(
+            "DELETE FROM quotes WHERE observed_at < ?",
+            (cutoff_text,),
+        )
+        bar_cursor = self.connection.execute(
+            "DELETE FROM price_bars WHERE observed_at < ?",
+            (cutoff_text,),
+        )
+        self.connection.commit()
+        return {
+            "quotes": int(quote_cursor.rowcount if quote_cursor.rowcount is not None else 0),
+            "price_bars": int(bar_cursor.rowcount if bar_cursor.rowcount is not None else 0),
+        }
 
     def operations_for_date(self, market: str, day: str) -> list[sqlite3.Row]:
         return self.connection.execute(

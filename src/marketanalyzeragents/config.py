@@ -53,12 +53,21 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "collectors": {
         "user_agent": "market-analyzer-agents/0.1 research@example.com",
         "timeout_seconds": 30,
+        "max_retries": 2,
+        "retry_backoff_seconds": 1.0,
         "max_evidence_items": 200,
+    },
+    "service": {
+        "health_path": "state/service-health.json",
+        "max_backoff_seconds": 300,
+        "retention_days": 120,
     },
     "openai": {
         "api_base": "https://api.openai.com/v1",
         "model": "gpt-5.4",
         "reasoning_effort": "medium",
+        "max_retries": 2,
+        "retry_backoff_seconds": 1.0,
     },
     "zhipu": {
         "api_base": "https://open.bigmodel.cn/api/paas/v4",
@@ -66,6 +75,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "temperature": 0.2,
         "max_tokens": 32768,
         "thinking": "enabled",
+        "max_retries": 2,
+        "retry_backoff_seconds": 1.0,
     },
     "codex": {"model": "", "sandbox": "workspace-write", "extra_writable_dirs": []},
     "feishu": {"webhook_url": "", "timeout_seconds": 10},
@@ -134,6 +145,10 @@ def load_settings(root: Path) -> Dict[str, Any]:
         }
     if os.environ.get("MARKET_ANALYZER_AGENTS_BRIEF_BASE_URL"):
         settings["web"]["brief_base_url"] = os.environ["MARKET_ANALYZER_AGENTS_BRIEF_BASE_URL"].strip()
+    if os.environ.get("MARKET_ANALYZER_AGENTS_HEALTH_PATH"):
+        settings["service"]["health_path"] = os.environ["MARKET_ANALYZER_AGENTS_HEALTH_PATH"].strip()
+    if os.environ.get("MARKET_ANALYZER_AGENTS_RETENTION_DAYS"):
+        settings["service"]["retention_days"] = int(os.environ["MARKET_ANALYZER_AGENTS_RETENTION_DAYS"])
 
     return settings
 

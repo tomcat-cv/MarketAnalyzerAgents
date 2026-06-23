@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import time as time_module
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -127,9 +128,17 @@ def window_duration_hours(start: datetime, end: datetime) -> int:
 
 
 class HttpClient:
-    def __init__(self, user_agent: str, timeout: int = 30) -> None:
+    def __init__(
+        self,
+        user_agent: str,
+        timeout: int = 30,
+        max_retries: int = 2,
+        retry_backoff_seconds: float = 1.0,
+    ) -> None:
         self.user_agent = user_agent
         self.timeout = timeout
+        self.max_retries = max(0, max_retries)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
 
     def request_bytes(
         self,
@@ -150,14 +159,22 @@ class HttpClient:
             headers=request_headers,
             method=method,
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return response.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            raise CollectionError(f"HTTP {exc.code} for {url}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise CollectionError(f"Could not fetch {url}: {exc.reason}") from exc
+        last_error: CollectionError | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    return response.read()
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+                last_error = CollectionError(f"HTTP {exc.code} for {url}: {detail}")
+                if exc.code != 429 and exc.code < 500:
+                    raise last_error from exc
+            except urllib.error.URLError as exc:
+                last_error = CollectionError(f"Could not fetch {url}: {exc.reason}")
+            if attempt < self.max_retries:
+                time_module.sleep(self.retry_backoff_seconds * (2 ** attempt))
+        assert last_error is not None
+        raise last_error
 
     def get_json(self, url: str) -> Any:
         return json.loads(self.request_bytes(url).decode("utf-8"))
@@ -246,6 +263,26 @@ def collect_rss_items(
         if len(items) >= limit:
             break
     return items
+
+
+def configured_company_rss_feeds(sources: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    holding_tickers = {
+        str(holding.get("ticker", "")).upper().strip()
+        for holding in configured_portfolio_holdings(sources)
+        if str(holding.get("ticker", "")).strip()
+    }
+    feeds: List[Dict[str, Any]] = []
+    for feed in sources.get("collectors", {}).get("company_rss_feeds", []):
+        if not isinstance(feed, Mapping):
+            continue
+        raw_tickers = feed.get("tickers", [])
+        if isinstance(raw_tickers, str):
+            tickers = {raw_tickers.upper().strip()} if raw_tickers.strip() else set()
+        else:
+            tickers = {str(value).upper().strip() for value in raw_tickers if str(value).strip()}
+        if tickers and tickers & holding_tickers:
+            feeds.append(dict(feed))
+    return feeds
 
 
 def _ticker_cik_map(payload: Mapping[str, Any]) -> Dict[str, str]:
@@ -915,6 +952,8 @@ def collect_evidence(
     http_client = client or HttpClient(
         user_agent=user_agent,
         timeout=int(collector_settings.get("timeout_seconds", 30)),
+        max_retries=int(collector_settings.get("max_retries", 2)),
+        retry_backoff_seconds=float(collector_settings.get("retry_backoff_seconds", 1.0)),
     )
     cutoff, window_end, window_mode = resolve_research_window(settings, now=now)
     local_tz = _local_timezone(str(settings.get("timezone", "Asia/Shanghai")))
@@ -1022,7 +1061,9 @@ def collect_evidence(
             detail=str(sec_config.get("disabled_reason", "Disabled by configuration.")),
         )
 
-    for feed in source_collectors.get("rss_feeds", []):
+    configured_rss_feeds = list(source_collectors.get("rss_feeds", []))
+    configured_rss_feeds.extend(configured_company_rss_feeds(sources))
+    for feed in configured_rss_feeds:
         feed_name = str(feed.get("name", feed.get("url", "unknown RSS")))
         if not feed.get("enabled", True):
             _record_coverage(

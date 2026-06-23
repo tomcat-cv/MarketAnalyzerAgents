@@ -607,7 +607,12 @@ def command_market_status(args: argparse.Namespace) -> int:
     root = find_project_root()
     settings = load_settings(root)
     market_settings = settings.get("markets", {}).get(args.market, {})
-    status = market_status(args.market, holidays=market_settings.get("holidays", []))
+    status = market_status(
+        args.market,
+        holidays=market_settings.get("holidays", []),
+        extra_open_dates=market_settings.get("extra_open_dates", []),
+        early_closes=market_settings.get("early_closes", {}),
+    )
     print(json.dumps(status.__dict__, ensure_ascii=False, indent=2, default=str))
     return 0
 
@@ -640,7 +645,12 @@ def command_intraday(args: argparse.Namespace) -> int:
         int(settings.get("collectors", {}).get("timeout_seconds", 30)),
     )
     while True:
-        status = market_status(args.market, holidays=market_settings.get("holidays", []))
+        status = market_status(
+            args.market,
+            holidays=market_settings.get("holidays", []),
+            extra_open_dates=market_settings.get("extra_open_dates", []),
+            early_closes=market_settings.get("early_closes", {}),
+        )
         if status.state != "open" and not args.force:
             print(f"{args.market} is {status.state}; no intraday polling performed.")
             return 0
@@ -652,14 +662,23 @@ def command_intraday(args: argparse.Namespace) -> int:
                     continue
                 for ticker in item.matched_tickers:
                     evidence_by_ticker.setdefault(ticker.upper(), []).append(item.__dict__)
+        failures = []
         for holding in holdings:
-            data = fetch_yahoo_market_data(
-                client,
-                args.market,
-                holding["symbol"],
-                history_range=str(market_data_settings.get("history_range", "6mo")),
-                history_interval=str(market_data_settings.get("history_interval", "1d")),
-            )
+            try:
+                data = fetch_yahoo_market_data(
+                    client,
+                    args.market,
+                    holding["symbol"],
+                    history_range=str(market_data_settings.get("history_range", "6mo")),
+                    history_interval=str(market_data_settings.get("history_interval", "1d")),
+                )
+            except Exception as exc:
+                failures.append((holding["symbol"], exc))
+                print(
+                    f"Intraday market data failed for {args.market} {holding['symbol']}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
             quote = data.quote
             store.save_quotes([quote])
             store.save_price_bars(data.history)
@@ -694,6 +713,9 @@ def command_intraday(args: argparse.Namespace) -> int:
                 )
             outbox.deliver(suggestion)
             print(json.dumps(suggestion, ensure_ascii=False))
+        if len(failures) == len(holdings):
+            print(f"Intraday polling failed for all {args.market} holdings.", file=sys.stderr)
+            return 1
         if not args.watch:
             return 0
         time_module.sleep(interval)
@@ -778,6 +800,171 @@ def command_schedule(args: argparse.Namespace) -> int:
             print(f"Scheduled run failed with exit code {exit_code}.", file=sys.stderr)
 
 
+def _configured_intraday_markets(
+    inputs: dict[str, Any],
+    requested_markets: Sequence[str] | None,
+) -> list[str]:
+    if requested_markets:
+        return list(dict.fromkeys(requested_markets))
+    markets = [
+        holding["market"]
+        for holding in configured_portfolio_holdings(inputs.get("sources", {}))
+        if holding.get("market") in {"a_share", "us_equities"}
+    ]
+    return list(dict.fromkeys(markets))
+
+
+def _write_service_health(
+    root: Path,
+    settings: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    service_settings = settings.get("service", {})
+    path = resolve_path(root, service_settings.get("health_path", "state/service-health.json"))
+    write_json(path, payload)
+
+
+def command_service(args: argparse.Namespace) -> int:
+    root = find_project_root()
+    load_dotenv(root / ".env")
+    settings = load_settings(root)
+    inputs = read_inputs(root, settings)
+    markets = _configured_intraday_markets(inputs, args.markets)
+    if not markets:
+        print("No configured intraday markets. Add holdings or pass --markets.", file=sys.stderr)
+        return 2
+
+    next_brief_target = None
+    last_intraday_poll: dict[str, float] = {}
+    next_intraday_allowed: dict[str, float] = {}
+    failure_backoff: dict[str, float] = {}
+    market_health: dict[str, dict[str, Any]] = {market: {"state": "starting"} for market in markets}
+    last_retention_day = None
+    print(
+        "Service started. "
+        f"Brief schedule enabled={not args.no_briefs}; "
+        f"intraday markets={', '.join(markets)}.",
+        flush=True,
+    )
+
+    while True:
+        try:
+            settings = load_settings(root)
+            now = local_now(str(settings.get("timezone", "Asia/Shanghai")))
+            service_settings = settings.get("service", {})
+            today = now.date().isoformat()
+            if last_retention_day != today:
+                store, _ = _store_and_outbox(root, settings)
+                try:
+                    pruned = store.prune_market_data(
+                        int(service_settings.get("retention_days", 120)),
+                    )
+                finally:
+                    store.close()
+                last_retention_day = today
+                print(f"Retention cleanup complete: {json.dumps(pruned, ensure_ascii=False)}", flush=True)
+            if not args.no_briefs:
+                if next_brief_target is None or next_brief_target <= now:
+                    if next_brief_target is not None:
+                        exit_code = _run_once_from_schedule(args)
+                        if exit_code != 0:
+                            print(
+                                f"Scheduled brief failed with exit code {exit_code}.",
+                                file=sys.stderr,
+                            )
+                    next_brief_target = next_run_at(now, settings)
+                    print(
+                        f"Next scheduled brief: {next_brief_target.isoformat(timespec='seconds')}",
+                        flush=True,
+                    )
+
+            for market in markets:
+                market_settings = settings.get("markets", {}).get(market, {})
+                status = market_status(
+                    market,
+                    holidays=market_settings.get("holidays", []),
+                    extra_open_dates=market_settings.get("extra_open_dates", []),
+                    early_closes=market_settings.get("early_closes", {}),
+                )
+                if status.state != "open":
+                    market_health[market] = {
+                        "state": status.state,
+                        "as_of_beijing": status.as_of_beijing.isoformat(),
+                    }
+                    continue
+                interval = args.interval or int(market_settings.get("poll_interval_seconds", 60))
+                now_monotonic = time_module.monotonic()
+                allowed_at = next_intraday_allowed.get(market, 0.0)
+                if now_monotonic < allowed_at:
+                    continue
+                previous = last_intraday_poll.get(market)
+                if previous is not None and now_monotonic - previous < interval:
+                    continue
+                last_intraday_poll[market] = now_monotonic
+                intraday_args = argparse.Namespace(
+                    market=market,
+                    watch=False,
+                    interval=interval,
+                    force=False,
+                    with_news=args.with_news,
+                    advice_backend=args.advice_backend,
+                    debate_rounds=args.debate_rounds,
+                )
+                exit_code = command_intraday(intraday_args)
+                if exit_code != 0:
+                    previous_backoff = failure_backoff.get(market, float(args.tick_seconds))
+                    backoff = min(
+                        float(service_settings.get("max_backoff_seconds", 300)),
+                        max(float(args.tick_seconds), previous_backoff * 2),
+                    )
+                    failure_backoff[market] = backoff
+                    next_intraday_allowed[market] = time_module.monotonic() + backoff
+                    market_health[market] = {
+                        "state": "poll_failed",
+                        "exit_code": exit_code,
+                        "backoff_seconds": backoff,
+                        "as_of_beijing": now.isoformat(),
+                    }
+                    print(
+                        f"Intraday poll failed for {market} with exit code {exit_code}.",
+                        file=sys.stderr,
+                    )
+                else:
+                    failure_backoff.pop(market, None)
+                    next_intraday_allowed.pop(market, None)
+                    market_health[market] = {
+                        "state": "poll_ok",
+                        "as_of_beijing": now.isoformat(),
+                    }
+            _write_service_health(
+                root,
+                settings,
+                {
+                    "status": "running",
+                    "updated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(),
+                    "brief_schedule_enabled": not args.no_briefs,
+                    "next_brief_target": next_brief_target.isoformat() if next_brief_target else None,
+                    "markets": market_health,
+                },
+            )
+            time_module.sleep(args.tick_seconds)
+        except KeyboardInterrupt:
+            _write_service_health(
+                root,
+                settings,
+                {
+                    "status": "stopped",
+                    "updated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(),
+                    "markets": market_health,
+                },
+            )
+            print("Service stopped.")
+            return 130
+        except ScheduleError as exc:
+            print(f"Invalid schedule configuration: {exc}", file=sys.stderr)
+            return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="marketanalyzeragents",
@@ -858,6 +1045,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     schedule_parser.add_argument("--once", action="store_true", help="Run once through the scheduler entrypoint.")
     schedule_parser.set_defaults(func=command_schedule)
+
+    service_parser = subparsers.add_parser(
+        "service",
+        help="Run briefs and intraday market polling in one long-lived process.",
+    )
+    add_common_run_args(service_parser)
+    service_parser.add_argument(
+        "--markets",
+        nargs="+",
+        choices=["a_share", "us_equities"],
+        help="Intraday markets to poll. Defaults to markets with configured holdings.",
+    )
+    service_parser.add_argument(
+        "--no-briefs",
+        action="store_true",
+        help="Disable scheduled pre-market briefs inside the service.",
+    )
+    service_parser.add_argument(
+        "--with-news",
+        action="store_true",
+        help="Collect verified news before each intraday advice cycle.",
+    )
+    service_parser.add_argument(
+        "--advice-backend",
+        choices=["conservative", "zhipu", "openai"],
+        default="conservative",
+        help="Intraday judgment backend. Conservative mode never emits directional advice.",
+    )
+    service_parser.add_argument("--interval", type=int, help="Override all market polling intervals in seconds.")
+    service_parser.add_argument(
+        "--tick-seconds",
+        type=int,
+        default=15,
+        help="How often the service checks schedules and market state.",
+    )
+    service_parser.add_argument(
+        "--debate-rounds",
+        type=int,
+        choices=range(1, 4),
+        help="Bull/bear discussion rounds for model-backed intraday advice.",
+    )
+    service_parser.set_defaults(func=command_service)
 
     return parser
 

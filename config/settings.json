@@ -49,7 +49,14 @@
   "collectors": {
     "user_agent": "market-analyzer-agents/0.1 research@example.com",
     "timeout_seconds": 30,
+    "max_retries": 2,
+    "retry_backoff_seconds": 1.0,
     "max_evidence_items": 200
+  },
+  "service": {
+    "health_path": "state/service-health.json",
+    "max_backoff_seconds": 300,
+    "retention_days": 120
   },
   "obsidian": {
     "vault_path": "",
@@ -58,14 +65,18 @@
   "openai": {
     "api_base": "https://api.openai.com/v1",
     "model": "gpt-5.4",
-    "reasoning_effort": "medium"
+    "reasoning_effort": "medium",
+    "max_retries": 2,
+    "retry_backoff_seconds": 1.0
   },
   "zhipu": {
     "api_base": "https://open.bigmodel.cn/api/paas/v4",
     "model": "glm-5.1",
     "temperature": 0.2,
     "max_tokens": 32768,
-    "thinking": "enabled"
+    "thinking": "enabled",
+    "max_retries": 2,
+    "retry_backoff_seconds": 1.0
   },
   "codex": {
     "model": "",

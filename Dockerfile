@@ -13,7 +13,7 @@ COPY memory/feedback.example.md ./memory/feedback.example.md
 COPY scripts ./scripts
 
 RUN pip install --no-cache-dir . \
-    && mkdir -p briefs runs memory
+    && mkdir -p briefs runs memory state
 
 HEALTHCHECK --interval=5m --timeout=10s --start-period=30s \
     CMD marketanalyzeragents doctor >/dev/null || exit 1

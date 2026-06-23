@@ -12,4 +12,5 @@ services:
       - ./briefs:/app/briefs
       - ./runs:/app/runs
       - ./memory:/app/memory
-    command: ["marketanalyzeragents", "schedule"]
+      - ./state:/app/state
+    command: ["marketanalyzeragents", "service"]

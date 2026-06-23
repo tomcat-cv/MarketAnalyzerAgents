@@ -23,6 +23,20 @@ class MarketCalendarTests(unittest.TestCase):
         self.assertEqual(status.session_open_beijing.hour, 22)
         self.assertEqual(status.session_open_beijing.minute, 30)
 
+    def test_configured_extra_open_day_handles_makeup_trading_day(self) -> None:
+        now = datetime(2026, 6, 13, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        status = market_status("a_share", now, extra_open_dates=["2026-06-13"])
+        self.assertEqual(status.state, "open")
+
+    def test_configured_early_close_ends_us_session_before_regular_close(self) -> None:
+        now = datetime(2026, 7, 3, 2, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+        status = market_status(
+            "us_equities",
+            now,
+            early_closes={"2026-07-02": "13:00"},
+        )
+        self.assertEqual(status.state, "post_market")
+
 
 if __name__ == "__main__":
     unittest.main()

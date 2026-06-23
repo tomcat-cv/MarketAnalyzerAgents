@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -69,6 +70,8 @@ def call_responses_api(
     api_base: str,
     payload: Mapping[str, Any],
     timeout: int = 180,
+    max_retries: int = 2,
+    retry_backoff_seconds: float = 1.0,
 ) -> OpenAIResult:
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -81,16 +84,24 @@ def call_responses_api(
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise OpenAIError(f"OpenAI API returned HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise OpenAIError(f"Could not reach OpenAI API: {exc.reason}") from exc
+    last_error: OpenAIError | None = None
+    for attempt in range(max(0, max_retries) + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = json.loads(response.read().decode("utf-8"))
+            return OpenAIResult(text=extract_response_text(raw), raw=raw)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            last_error = OpenAIError(f"OpenAI API returned HTTP {exc.code}: {detail}")
+            if exc.code != 429 and exc.code < 500:
+                raise last_error from exc
+        except urllib.error.URLError as exc:
+            last_error = OpenAIError(f"Could not reach OpenAI API: {exc.reason}")
+        if attempt < max_retries:
+            time.sleep(max(0.0, retry_backoff_seconds) * (2 ** attempt))
 
-    return OpenAIResult(text=extract_response_text(raw), raw=raw)
+    assert last_error is not None
+    raise last_error
 
 
 def run_openai(
@@ -125,5 +136,7 @@ def run_openai(
         api_key=api_key,
         api_base=str(openai_settings.get("api_base", "https://api.openai.com/v1")),
         payload=payload,
+        max_retries=int(openai_settings.get("max_retries", 2)),
+        retry_backoff_seconds=float(openai_settings.get("retry_backoff_seconds", 1.0)),
     )
     return result, payload
