@@ -20,6 +20,9 @@
     "database_path": "state/portfolio.db",
     "conversation_outbox": "state/conversation-outbox.jsonl"
   },
+  "web": {
+    "brief_base_url": ""
+  },
   "markets": {
     "a_share": {
       "holidays": [],

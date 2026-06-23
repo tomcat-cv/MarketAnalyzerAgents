@@ -56,7 +56,9 @@ For per-item analysis, explain what the item means for a reader, what matters, a
 is still uncertain. If the evidence is an SEC Form 4, explicitly explain the reporting
 person, transaction direction, share count, price, and post-transaction ownership when
 those fields are present in the evidence.
-For portfolio actions, you may synthesize and infer from the supplied summary-level evidence,
+For portfolio actions, you may synthesize and infer from all supplied summary-level evidence,
+including broad-market, macro, policy-risk, sector/theme, and company-specific evidence. Company
+news is not required when market or policy evidence directly affects a holding's configured themes,
 but every factual premise must be supported by the evidence IDs you cite. Holdings configuration
 identifies what to analyze; it is not factual evidence. When evidence is insufficient, choose
 观察 or 持有 with low confidence and say why. Never infer that no event happened merely because
@@ -105,12 +107,16 @@ Requirements:
 - Return exactly one portfolio action for every configured holding and no others.
 - Portfolio action must be one of 加仓, 减仓, 持有, 观察.
 - Portfolio confidence must be one of 低, 中, 高.
-- Every 加仓 or 减仓 action must cite at least one supplied evidence ID.
+- Every 加仓 or 减仓 action must cite at least one supplied evidence ID, and the rationale must
+  explain why broad-market, policy, theme, or company evidence is directly relevant to that holding.
 - If evidence_ids is empty, confidence must be 低 and the rationale must explain the evidence gap.
 - Use evidence_ids to support every factual premise in rationale and watch_for.
+- Do not require company-specific news for every holding. Broad-market, policy-risk, macro, and
+  theme evidence may support 持有/观察 and, when directly tied to the holding's themes, may support
+  加仓/减仓. Cite those evidence IDs explicitly.
 - Yahoo Finance market-data snapshots may be used as price context, but price-only movement
-  without company, filing, official, macro, or reputable-reporting evidence is not enough for
-  加仓/减仓 or for 中/高 confidence.
+  without company, filing, official, policy, macro, theme, or reputable-reporting evidence is not
+  enough for 加仓/减仓 or for 中/高 confidence.
 - Do not use title_only or metadata_only evidence for operation analysis; they are not supplied here.
 - Do not state that no other events happened or that a market/watchlist is quiet.
 - Preserve technical terms, names, dates, numbers, and qualifiers. When translating
@@ -158,16 +164,18 @@ Hard constraints:
 - Summarize only facts explicitly present in each Evidence field and title.
 - For each summary-level item, include a reader-friendly interpretation that explains why it matters
   and what remains uncertain. For SEC Form 4, translate the table fields into plain Chinese when present.
-- You may analyze portfolio actions only from summary-level evidence. Cite the supporting
-  evidence IDs and source links for every action rationale.
+- You may analyze portfolio actions from all summary-level evidence, including broad-market,
+  macro, policy-risk, sector/theme, and company-specific evidence. Company news is not required
+  when market or policy evidence directly affects a holding's configured themes. Cite the
+  supporting evidence IDs and source links for every action rationale.
 - Do not use title_only or metadata_only items for portfolio action analysis; display them
   as pending verification only.
 - For every configured holding, choose exactly one of 加仓, 减仓, 持有, 观察 and state confidence.
 - When evidence is insufficient, prefer 观察 or 持有 with low confidence. Do not infer that
   no event happened because collectors did not capture it.
 - Treat Yahoo Finance market-data snapshots as price context; price-only movement without
-  company, filing, official, macro, or reputable-reporting evidence is not enough for 加仓/减仓
-  or for 中/高 confidence.
+  company, filing, official, policy, macro, theme, or reputable-reporting evidence is not enough
+  for 加仓/减仓 or for 中/高 confidence.
 - Do not calculate new averages, ratios, percentage changes, ownership reduction percentages,
   or unit conversions unless that exact number already appears in the supplied evidence.
 - Do not give position sizes, price targets, or personalized advice.

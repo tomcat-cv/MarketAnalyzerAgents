@@ -9,6 +9,7 @@ from marketanalyzeragents.collectors import (
     collect_rss_items,
     collect_sec_filings,
     collect_yahoo_market_snapshot,
+    configured_company_rss_feeds,
     HttpClient,
     resolve_research_window,
 )
@@ -257,6 +258,68 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("最新股价", pack.items[0].title)
         self.assertIn("Latest available price", pack.items[0].content)
         self.assertIn("holding_price_snapshot", {entry.category for entry in pack.coverage})
+
+    def test_company_rss_feeds_follow_current_holdings(self) -> None:
+        feeds = configured_company_rss_feeds(
+            {
+                "portfolios": {
+                    "us_equities": {
+                        "holdings": [{"ticker": "NVDA", "company": "NVIDIA"}]
+                    }
+                },
+                "collectors": {
+                    "company_rss_feeds": [
+                        {"name": "NVIDIA IR", "tickers": ["NVDA"]},
+                        {"name": "AMD IR", "tickers": ["AMD"]},
+                    ]
+                },
+            }
+        )
+
+        self.assertEqual([feed["name"] for feed in feeds], ["NVIDIA IR"])
+
+    def test_collect_evidence_only_queries_company_rss_for_configured_holdings(self) -> None:
+        pack = collect_evidence(
+            settings={
+                "timezone": "UTC",
+                "freshness_window": "rolling_hours",
+                "lookback_hours": 72,
+                "collectors": {"max_evidence_items": 20},
+            },
+            sources={
+                "portfolios": {
+                    "us_equities": {
+                        "holdings": [{"ticker": "NVDA", "company": "NVIDIA"}]
+                    }
+                },
+                "collectors": {
+                    "yahoo_market_snapshots": {"enabled": False},
+                    "sec_filings": {"enabled": False},
+                    "rss_feeds": [],
+                    "company_rss_feeds": [
+                        {
+                            "name": "NVIDIA IR",
+                            "url": "https://official.example/nvidia.xml",
+                            "allowed_domains": ["official.example"],
+                            "tickers": ["NVDA"],
+                        },
+                        {
+                            "name": "AMD IR",
+                            "url": "https://official.example/amd.xml",
+                            "allowed_domains": ["official.example"],
+                            "tickers": ["AMD"],
+                        },
+                    ],
+                    "cninfo": {"enabled": False},
+                    "finnhub": {"enabled": False},
+                },
+            },
+            client=FakeClient(),
+            now=datetime(2026, 6, 5, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual([item.source_name for item in pack.items], ["NVIDIA IR"])
+        self.assertEqual([item.matched_tickers for item in pack.items], [["NVDA"]])
 
 if __name__ == "__main__":
     unittest.main()

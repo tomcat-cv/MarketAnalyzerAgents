@@ -166,14 +166,15 @@ contains no unsupported factual premise.
 Exit criterion: a user can reconcile a complete day from pre-market brief
 through intraday suggestions to post-market review.
 
-### Phase 5 - Conversation integration (interface and outbox implemented)
+### Phase 5 - Notification and HTML delivery (foundation implemented)
 
-- approve a delivery/input technical design;
-- implement `ConversationPort` adapters without coupling domain services to a
-  chat vendor;
-- add authentication, user isolation, acknowledgement, and delivery retries.
+- use HTML briefs as the primary information display surface;
+- use Feishu group-bot webhooks for notifications;
+- keep the local JSONL outbox as an audit log, not as a product messaging
+  surface;
+- do not add additional chat transports until explicitly requested.
 
-Exit criterion: changing conversation providers does not alter portfolio,
+Exit criterion: brief display and notification delivery do not alter portfolio,
 market-data, suggestion, or review logic.
 
 ## 6. Near-term Priorities
@@ -183,7 +184,7 @@ market-data, suggestion, or review logic.
    policies.
 3. Evaluate A-share and US quote providers against licensing, latency,
    historical coverage, rate limits, and cost.
-4. Approve the production recommendation policy and conversation channel.
+4. Approve the production recommendation policy and Feishu/HTML delivery rules.
 
 ## 7. Non-goals Until Explicitly Approved
 

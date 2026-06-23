@@ -204,7 +204,7 @@ MARKET_ANALYZER_AGENTS_RUN_ON_START=true
 ## 当前盘前简报流程
 
 ```text
-Yahoo 行情 / SEC EDGAR / 官方 RSS / 巨潮资讯
+Yahoo 行情 / SEC EDGAR / 市场与政策官方 RSS / 持仓派生公司 RSS / 巨潮资讯
         ↓
 独立 collectors 采集
         ↓
@@ -221,14 +221,14 @@ Verified Evidence Pack（summary / metadata_only / title_only）
 输出 briefs/YYYY-MM-DD-brief.html + source-log.md
 ```
 
-## 消息推送
+## 展示与通知
 
-| Outbox | 说明 |
-|--------|------|
-| **JSONL 文件**（默认） | 追加写入 `state/conversation-outbox.jsonl` |
-| **飞书群机器人** | 通过 Webhook 推送到飞书群 |
+| 路径 | 说明 |
+|------|------|
+| **HTML 简报** | 输出到 `briefs/`，可通过 `web.brief_base_url` 配置公开访问地址 |
+| **飞书群机器人** | 通过 Webhook 推送简报通知、盘中建议和盘后复盘 |
 
-启用飞书推送：在 `config/settings.json` 填入 Webhook URL，或设置环境变量 `FEISHU_WEBHOOK_URL`。
+本地仍会追加写入 `state/conversation-outbox.jsonl` 作为审计日志。启用飞书推送：在 `config/settings.json` 填入 Webhook URL，或设置环境变量 `FEISHU_WEBHOOK_URL`。
 
 ## 部署
 

@@ -15,6 +15,7 @@ this file intentionally controls only pre-market research priorities.
 - A-shares: broad-market direction plus technology, semiconductors, semiconductor equipment/materials, AI compute infrastructure, and related industrial policy. No A-share holdings are currently configured; the portfolio slot is intentionally empty.
 - Focus topics: user-configured themes such as semiconductors, gold, and silver. Themes are independent from portfolio holdings and should use the most relevant market or cross-asset evidence sources.
 - Cross-market drivers: Federal Reserve policy, Treasury yields, inflation/jobs data, USD, oil, copper, gold/silver, market breadth, volatility, and risk appetite.
+- Source priority: prefer free official or primary sources first. Company-specific sources must follow the configured holdings; broad-market, macro, policy-risk, and theme sources remain active even when a company has no fresh release.
 
 ## What Counts As Signal
 
@@ -23,6 +24,7 @@ this file intentionally controls only pre-market research priorities.
 - US macro releases or Fed communication that could affect rates, equity duration, liquidity, sector rotation, or precious metals.
 - A-share company announcements, earnings preannouncements, M&A/restructuring, refinancing, subsidies, export controls, localization/import-substitution policy, and exchange/regulator notices.
 - Daily broad-index and configured theme-proxy price action as market context; give it more weight when connected to a clear catalyst, positioning change, liquidity shock, or cross-asset confirmation.
+- Official policy-risk updates, including export controls, sanctions, tariffs, trade policy, and industrial policy, especially when they affect semiconductors, AI infrastructure, data-center power, supply chains, or cross-border revenue risk.
 - Non-obvious links between US AI capex, semiconductor supply chains, energy demand, China tech policy, and metals/fund flows.
 
 ## What To Filter Out
@@ -42,6 +44,7 @@ this file intentionally controls only pre-market research priorities.
 - The model may infer conservative holding actions only from summary-level evidence, and every factual premise must cite supplied evidence IDs.
 - Title-only and metadata-only items stay in the source log unless they are directly tied to a configured holding; they are never used for holding actions.
 - When evidence is insufficient, recommend observing or maintaining the existing plan with low confidence; do not invent position sizes or price targets.
+- Do not require company-specific news before giving a holding-level view. If company news is absent, use relevant broad-market, policy-risk, macro, and theme evidence to support conservative holding-level actions, while making the evidence scope clear.
 - Do not treat an event that was not captured by collectors as evidence that the event did not happen.
 - In the appendix, distinguish sources that were queried with no matching items from disabled, key-missing, reserved, or failed sources.
 - Do not invent prices, dates, filings, numbers, background facts, implications, or citations.
