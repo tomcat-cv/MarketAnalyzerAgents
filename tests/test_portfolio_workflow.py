@@ -4,7 +4,13 @@ import sqlite3
 import tempfile
 import unittest
 
-from marketanalyzeragents.intraday import build_suggestion, fetch_yahoo_market_data, yahoo_symbol
+from marketanalyzeragents.intraday import (
+    build_suggestion,
+    fetch_yahoo_market_data,
+    should_emit_suggestion,
+    should_run_agent_debate,
+    yahoo_symbol,
+)
 from marketanalyzeragents.agent_debate import DebateTurn
 from marketanalyzeragents.portfolio_store import PortfolioStore, Quote
 from marketanalyzeragents.review import build_daily_review
@@ -122,6 +128,29 @@ class PortfolioWorkflowTests(unittest.TestCase):
         self.assertEqual(suggestion["action"], "观察")
         self.assertEqual(suggestion["confidence"], "低")
         self.assertIn("缺少同期已验证资讯", suggestion["rationale"])
+
+    def test_routine_low_signal_observations_are_suppressed_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PortfolioStore(Path(tmp) / "state.db")
+            quote = Quote("us_equities", "MRVL", "2026-06-23T17:57:04+00:00", 100.04, 100)
+            store.save_quotes([quote])
+            suggestion = build_suggestion(store, quote)
+
+        self.assertEqual(suggestion["signal"], "routine_poll")
+        self.assertFalse(should_run_agent_debate(suggestion))
+        self.assertFalse(should_emit_suggestion(suggestion))
+        self.assertTrue(should_emit_suggestion(suggestion, emit_low_signal=True))
+
+    def test_material_price_moves_still_emit_even_without_news(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PortfolioStore(Path(tmp) / "state.db")
+            quote = Quote("us_equities", "MRVL", "2026-06-23T17:57:04+00:00", 103, 100)
+            store.save_quotes([quote])
+            suggestion = build_suggestion(store, quote)
+
+        self.assertEqual(suggestion["signal"], "material_price_move")
+        self.assertTrue(should_run_agent_debate(suggestion))
+        self.assertTrue(should_emit_suggestion(suggestion))
 
     def test_review_uses_only_suggestion_available_before_operation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -37,6 +37,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "history_interval": "1d",
     },
     "intraday_agents": {
+        "advice_backend": "conservative",
         "debate_rounds": 1,
         "max_evidence_items_per_symbol": 8,
         "price_history_points": 20,

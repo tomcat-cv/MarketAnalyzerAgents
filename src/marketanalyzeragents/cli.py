@@ -43,6 +43,8 @@ from .intraday import (
     build_suggestion,
     fetch_yahoo_market_data,
     market_history_payload,
+    should_emit_suggestion,
+    should_run_agent_debate,
 )
 from .market_calendar import market_status
 from .openai_runner import OpenAIError, run_openai
@@ -50,6 +52,7 @@ from .portfolio_store import PortfolioStore
 from .prompting import build_openai_messages
 from .scheduler import ScheduleError, local_now, next_run_at, seconds_until
 from .review import build_daily_review
+from .web import run_web_server
 from .writer import (
     markdown_to_html,
     output_path_for,
@@ -445,6 +448,15 @@ def command_intraday(args: argparse.Namespace) -> int:
     agent_settings = settings.get("intraday_agents", {})
     interval = args.interval or int(market_settings.get("poll_interval_seconds", 60))
     debate_rounds = args.debate_rounds or int(agent_settings.get("debate_rounds", 1))
+    advice_backend = getattr(args, "advice_backend", None) or str(
+        agent_settings.get("advice_backend", "conservative")
+    )
+    if advice_backend not in {"conservative", "zhipu", "openai"}:
+        print(
+            "Invalid intraday_agents.advice_backend; expected conservative, zhipu, or openai.",
+            file=sys.stderr,
+        )
+        return 2
     max_agent_evidence = int(agent_settings.get("max_evidence_items_per_symbol", 8))
     history_points = int(agent_settings.get("price_history_points", 20))
     market_data_settings = settings.get("market_data", {})
@@ -495,21 +507,29 @@ def command_intraday(args: argparse.Namespace) -> int:
             store.save_price_bars(data.history)
             evidence = evidence_by_ticker.get(holding["ticker"].upper(), [])[:max_agent_evidence]
             turns = []
-            if args.advice_backend != "conservative":
+            suggestion = build_suggestion(
+                store, quote, [item["id"] for item in evidence]
+            )
+            if advice_backend != "conservative" and should_run_agent_debate(suggestion):
                 debate = run_agent_debate(
                     quote=quote,
                     evidence=evidence,
-                    invoke=backend_invoker(settings, args.advice_backend),
+                    invoke=backend_invoker(settings, advice_backend),
                     rounds=debate_rounds,
                     price_history=market_history_payload(data, history_points),
                     portfolio=holding,
                 )
-                suggestion = debate.suggestion
+                suggestion = {
+                    **debate.suggestion,
+                    "price_change_pct": suggestion.get("price_change_pct"),
+                    "signal": suggestion.get("signal"),
+                }
                 turns = debate.turns
-            else:
-                suggestion = build_suggestion(
-                    store, quote, [item["id"] for item in evidence]
-                )
+            if not should_emit_suggestion(
+                suggestion,
+                emit_low_signal=bool(getattr(args, "emit_low_signal", False)),
+            ):
+                continue
             suggestion["id"] = store.save_suggestion(suggestion)
             if turns:
                 store.save_discussion(suggestion["id"], turns)
@@ -561,6 +581,11 @@ def command_review(args: argparse.Namespace) -> int:
     write_json(output, review)
     outbox.deliver({"type": "post_market_review", **review, "output": str(output)})
     print(f"Review written: {output}")
+    return 0
+
+
+def command_web(args: argparse.Namespace) -> int:
+    run_web_server(host=args.host, port=args.port, root=find_project_root())
     return 0
 
 
@@ -771,6 +796,7 @@ def command_service(args: argparse.Namespace) -> int:
                     with_news=args.with_news,
                     advice_backend=args.advice_backend,
                     debate_rounds=args.debate_rounds,
+                    emit_low_signal=args.emit_low_signal,
                 )
                 exit_code = command_intraday(intraday_args)
                 if exit_code != 0:
@@ -859,14 +885,18 @@ def build_parser() -> argparse.ArgumentParser:
     intraday_parser.add_argument(
         "--advice-backend",
         choices=["conservative", "zhipu", "openai"],
-        default="conservative",
-        help="Judgment backend. Conservative mode never emits directional advice.",
+        help="Judgment backend. Defaults to intraday_agents.advice_backend.",
     )
     intraday_parser.add_argument(
         "--debate-rounds",
         type=int,
         choices=range(1, 4),
         help="Bull/bear discussion rounds. Defaults to intraday_agents.debate_rounds.",
+    )
+    intraday_parser.add_argument(
+        "--emit-low-signal",
+        action="store_true",
+        help="Also emit routine low-confidence observations with no evidence or material price move.",
     )
     intraday_parser.set_defaults(func=command_intraday)
 
@@ -885,6 +915,11 @@ def build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument("--date", help="Review date in YYYY-MM-DD.")
     review_parser.add_argument("--output")
     review_parser.set_defaults(func=command_review)
+
+    web_parser = subparsers.add_parser("web", help="Run the local portfolio web dashboard.")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind.")
+    web_parser.add_argument("--port", type=int, default=8765, help="Port to bind.")
+    web_parser.set_defaults(func=command_web)
 
     schedule_parser = subparsers.add_parser("schedule", help="Run briefs on the configured schedule.")
     add_common_run_args(schedule_parser)
@@ -920,8 +955,7 @@ def build_parser() -> argparse.ArgumentParser:
     service_parser.add_argument(
         "--advice-backend",
         choices=["conservative", "zhipu", "openai"],
-        default="conservative",
-        help="Intraday judgment backend. Conservative mode never emits directional advice.",
+        help="Intraday judgment backend. Defaults to intraday_agents.advice_backend.",
     )
     service_parser.add_argument("--interval", type=int, help="Override all market polling intervals in seconds.")
     service_parser.add_argument(
@@ -935,6 +969,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         choices=range(1, 4),
         help="Bull/bear discussion rounds for model-backed intraday advice.",
+    )
+    service_parser.add_argument(
+        "--emit-low-signal",
+        action="store_true",
+        help="Also emit routine low-confidence intraday observations.",
     )
     service_parser.set_defaults(func=command_service)
 

@@ -290,4 +290,28 @@ def build_suggestion(store: PortfolioStore, quote: Quote, evidence_ids: Sequence
         ),
         "evidence_ids": list(evidence_ids),
         "invalidation": "行情数据过期、交易时段结束或出现新的公司/宏观证据时重新评估。",
+        "price_change_pct": round(change_pct, 4),
+        "signal": "material_price_move" if material else "routine_poll",
     }
+
+
+def should_run_agent_debate(suggestion: Mapping[str, Any]) -> bool:
+    """Only spend model calls on events that can change a user's decision."""
+    return bool(suggestion.get("evidence_ids")) or suggestion.get("signal") == "material_price_move"
+
+
+def should_emit_suggestion(
+    suggestion: Mapping[str, Any],
+    *,
+    emit_low_signal: bool = False,
+) -> bool:
+    """Suppress routine low-signal observations while keeping real alerts auditable."""
+    if emit_low_signal:
+        return True
+    if suggestion.get("action") != "观察":
+        return True
+    if suggestion.get("confidence") != "低":
+        return True
+    if suggestion.get("evidence_ids"):
+        return True
+    return suggestion.get("signal") == "material_price_move"

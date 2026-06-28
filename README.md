@@ -32,6 +32,7 @@ marketanalyzeragents intraday --market us_equities --watch
 marketanalyzeragents operation --market us_equities --symbol NVDA --action buy --quantity 10 --price 100
 marketanalyzeragents review --market us_equities
 marketanalyzeragents service --markets a_share us_equities
+marketanalyzeragents web --host 127.0.0.1 --port 8765
 ```
 
 ## 市场配置
@@ -46,6 +47,7 @@ marketanalyzeragents service --markets a_share us_equities
 - `runs/`：每次运行的证据、prompt、模型响应和校验记录。
 - `state/portfolio.db`：quotes、price bars、suggestions、operations、agent discussions。
 - `state/conversation-outbox.jsonl`：传输中立事件 outbox。
+- Web 工作台：默认 `http://127.0.0.1:8765`，提供持仓配置、盘前简报入口和盘中提醒流。
 
 ## 测试
 

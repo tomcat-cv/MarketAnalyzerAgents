@@ -180,6 +180,7 @@ class ServiceCommandTests(unittest.TestCase):
                 "conservative",
                 "--interval",
                 "60",
+                "--emit-low-signal",
             ]
         )
 
@@ -188,6 +189,179 @@ class ServiceCommandTests(unittest.TestCase):
         self.assertTrue(args.with_news)
         self.assertEqual(args.advice_backend, "conservative")
         self.assertEqual(args.interval, 60)
+        self.assertTrue(args.emit_low_signal)
+
+    def test_intraday_suppresses_routine_low_signal_notifications(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "state").mkdir()
+            (root / "config" / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "state": {
+                            "database_path": "state/portfolio.db",
+                            "conversation_outbox": "state/outbox.jsonl",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "config" / "sources.json").write_text(
+                json.dumps(
+                    {
+                        "portfolios": {
+                            "us_equities": {
+                                "holdings": [
+                                    {"ticker": "MRVL", "symbol": "MRVL", "company": "Marvell"}
+                                ]
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                market="us_equities",
+                watch=False,
+                interval=None,
+                force=True,
+                with_news=False,
+                advice_backend="conservative",
+                debate_rounds=None,
+                emit_low_signal=False,
+            )
+
+            def fake_fetch(client, market, symbol, *, history_range, history_interval):
+                return MarketData(
+                    quote=Quote("us_equities", "MRVL", "2026-06-23T17:57:04+00:00", 100.04, 100),
+                    history=(
+                        PriceBar(
+                            "us_equities",
+                            "MRVL",
+                            "1d",
+                            "2026-06-23T17:57:04+00:00",
+                            100,
+                            101,
+                            99,
+                            100.04,
+                            1000,
+                            "test",
+                        ),
+                    ),
+                    metrics={},
+                )
+
+            previous_cwd = Path.cwd()
+            os.chdir(root)
+            try:
+                with patch(
+                    "marketanalyzeragents.cli.fetch_yahoo_market_data",
+                    side_effect=fake_fetch,
+                ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    exit_code = command_intraday(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(exit_code, 0)
+            con = sqlite3.connect(root / "state" / "portfolio.db")
+            self.assertEqual(con.execute("select count(*) from quotes").fetchone()[0], 1)
+            self.assertEqual(con.execute("select count(*) from suggestions").fetchone()[0], 0)
+            self.assertFalse((root / "state" / "outbox.jsonl").exists())
+
+    def test_intraday_uses_configured_advice_backend_when_cli_omits_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "state").mkdir()
+            (root / "config" / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "intraday_agents": {"advice_backend": "openai"},
+                        "state": {
+                            "database_path": "state/portfolio.db",
+                            "conversation_outbox": "state/outbox.jsonl",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "config" / "sources.json").write_text(
+                json.dumps(
+                    {
+                        "portfolios": {
+                            "us_equities": {
+                                "holdings": [
+                                    {"ticker": "MRVL", "symbol": "MRVL", "company": "Marvell"}
+                                ]
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                market="us_equities",
+                watch=False,
+                interval=None,
+                force=True,
+                with_news=False,
+                advice_backend=None,
+                debate_rounds=None,
+                emit_low_signal=False,
+            )
+
+            def fake_fetch(client, market, symbol, *, history_range, history_interval):
+                return MarketData(
+                    quote=Quote("us_equities", "MRVL", "2026-06-23T17:57:04+00:00", 103, 100),
+                    history=(
+                        PriceBar(
+                            "us_equities",
+                            "MRVL",
+                            "1d",
+                            "2026-06-23T17:57:04+00:00",
+                            100,
+                            104,
+                            99,
+                            103,
+                            1000,
+                            "test",
+                        ),
+                    ),
+                    metrics={},
+                )
+
+            def fake_debate(**kwargs):
+                return argparse.Namespace(
+                    suggestion={
+                        "market": "us_equities",
+                        "symbol": "MRVL",
+                        "created_at": "2026-06-23T17:57:04+00:00",
+                        "action": "观察",
+                        "confidence": "中",
+                        "rationale": "configured backend was used",
+                        "evidence_ids": [],
+                        "invalidation": "test",
+                    },
+                    turns=[],
+                )
+
+            previous_cwd = Path.cwd()
+            os.chdir(root)
+            try:
+                with patch(
+                    "marketanalyzeragents.cli.fetch_yahoo_market_data",
+                    side_effect=fake_fetch,
+                ), patch(
+                    "marketanalyzeragents.cli.run_agent_debate",
+                    side_effect=fake_debate,
+                ) as debate, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    exit_code = command_intraday(args)
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(debate.called)
 
     def test_intraday_continues_when_one_holding_data_source_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -228,6 +402,7 @@ class ServiceCommandTests(unittest.TestCase):
                 with_news=False,
                 advice_backend="conservative",
                 debate_rounds=None,
+                emit_low_signal=False,
             )
 
             def fake_fetch(client, market, symbol, *, history_range, history_interval):
