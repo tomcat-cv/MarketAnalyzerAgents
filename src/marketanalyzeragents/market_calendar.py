@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Iterable, Mapping
 from zoneinfo import ZoneInfo
 
@@ -23,6 +23,13 @@ def _closed(market: str, now: datetime) -> MarketStatus:
     return MarketStatus(market, "closed", now.astimezone(BEIJING), None, None)
 
 
+def _is_trading_day(day: date, holidays: set[str], extra_open_dates: set[str]) -> bool:
+    text = day.isoformat()
+    if text in holidays:
+        return False
+    return day.weekday() < 5 or text in extra_open_dates
+
+
 def market_status(
     market: str,
     now: datetime | None = None,
@@ -37,7 +44,10 @@ def market_status(
     local = current.astimezone(local_zone)
     local_day = local.date().isoformat()
     extra_open = set(extra_open_dates)
-    if (local.weekday() >= 5 and local_day not in extra_open) or local_day in set(holidays):
+    holiday_set = set(holidays)
+    if market == "a_share" and (
+        (local.weekday() >= 5 and local_day not in extra_open) or local_day in holiday_set
+    ):
         return _closed(market, current)
     early_close_text = (early_closes or {}).get(local_day)
 
@@ -57,19 +67,56 @@ def market_status(
             state = "post_market"
         return MarketStatus(market, state, current.astimezone(BEIJING), morning_open, close)
 
+    overnight_after_open = datetime.combine(local.date(), time(20, 0), NEW_YORK)
+    next_trading_day = local.date() + timedelta(days=1)
+    if local >= overnight_after_open and _is_trading_day(next_trading_day, holiday_set, extra_open):
+        overnight_close = datetime.combine(next_trading_day, time(3, 50), NEW_YORK)
+        return MarketStatus(
+            market,
+            "overnight",
+            current.astimezone(BEIJING),
+            overnight_after_open.astimezone(BEIJING),
+            overnight_close.astimezone(BEIJING),
+        )
+
+    if not _is_trading_day(local.date(), holiday_set, extra_open):
+        return _closed(market, current)
+
+    overnight_open = datetime.combine(local.date() - timedelta(days=1), time(20, 0), NEW_YORK)
+    overnight_close = datetime.combine(local.date(), time(3, 50), NEW_YORK)
+    pre_market_open = datetime.combine(local.date(), time(4, 0), NEW_YORK)
     session_open = datetime.combine(local.date(), time(9, 30), NEW_YORK)
     close_time = time.fromisoformat(early_close_text) if early_close_text else time(16, 0)
     session_close = datetime.combine(local.date(), close_time, NEW_YORK)
-    if session_open <= local < session_close:
-        state = "open"
+    after_hours_close_time = time(17, 0) if early_close_text else time(20, 0)
+    after_hours_close = datetime.combine(local.date(), after_hours_close_time, NEW_YORK)
+
+    if local < overnight_close:
+        state = "overnight"
+        window_open = overnight_open
+        window_close = overnight_close
+    elif local < pre_market_open:
+        state = "overnight_break"
+        window_open = overnight_close
+        window_close = pre_market_open
     elif local < session_open:
         state = "pre_market"
-    else:
+        window_open = pre_market_open
+        window_close = session_open
+    elif local < session_close:
+        state = "open"
+        window_open = session_open
+        window_close = session_close
+    elif local < after_hours_close:
         state = "post_market"
+        window_open = session_close
+        window_close = after_hours_close
+    else:
+        return _closed(market, current)
     return MarketStatus(
         market,
         state,
         current.astimezone(BEIJING),
-        session_open.astimezone(BEIJING),
-        session_close.astimezone(BEIJING),
+        window_open.astimezone(BEIJING),
+        window_close.astimezone(BEIJING),
     )

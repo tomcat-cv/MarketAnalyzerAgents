@@ -23,6 +23,27 @@ class MarketCalendarTests(unittest.TestCase):
         self.assertEqual(status.session_open_beijing.hour, 22)
         self.assertEqual(status.session_open_beijing.minute, 30)
 
+    def test_us_sunday_night_is_overnight_during_daylight_saving(self) -> None:
+        now = datetime(2026, 6, 29, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        status = market_status("us_equities", now)
+        self.assertEqual(status.state, "overnight")
+        self.assertEqual(status.session_open_beijing.hour, 8)
+        self.assertEqual(status.session_close_beijing.hour, 15)
+        self.assertEqual(status.session_close_beijing.minute, 50)
+
+    def test_us_sunday_night_is_overnight_during_standard_time(self) -> None:
+        now = datetime(2026, 1, 5, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        status = market_status("us_equities", now)
+        self.assertEqual(status.state, "overnight")
+        self.assertEqual(status.session_open_beijing.hour, 9)
+        self.assertEqual(status.session_close_beijing.hour, 16)
+        self.assertEqual(status.session_close_beijing.minute, 50)
+
+    def test_us_overnight_break_is_not_reported_as_closed(self) -> None:
+        now = datetime(2026, 6, 9, 15, 55, tzinfo=ZoneInfo("Asia/Shanghai"))
+        status = market_status("us_equities", now)
+        self.assertEqual(status.state, "overnight_break")
+
     def test_configured_extra_open_day_handles_makeup_trading_day(self) -> None:
         now = datetime(2026, 6, 13, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
         status = market_status("a_share", now, extra_open_dates=["2026-06-13"])

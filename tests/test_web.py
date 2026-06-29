@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from marketanalyzeragents.web import (
+    INDEX_HTML,
     delete_focus_topic,
     delete_holding,
     load_dashboard_state,
@@ -144,6 +145,15 @@ class WebDashboardTests(unittest.TestCase):
 
         self.assertEqual(state["focus_topics"][0]["id"], "semiconductors")
         self.assertEqual(sources["focus_topics"], [])
+
+    def test_home_rendering_is_read_only_and_config_keeps_actions(self) -> None:
+        home_renderer = INDEX_HTML.split("function renderHoldings", 1)[1].split("function renderHoldingConfig", 1)[0]
+        config_renderer = INDEX_HTML.split("function renderHoldingConfig", 1)[1].split("function renderAlerts", 1)[0]
+
+        self.assertNotIn("data-edit-holding", home_renderer)
+        self.assertNotIn("data-delete", home_renderer)
+        self.assertIn("data-edit-holding", config_renderer)
+        self.assertIn("data-delete", config_renderer)
 
 
 if __name__ == "__main__":

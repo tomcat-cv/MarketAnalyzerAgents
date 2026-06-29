@@ -30,8 +30,8 @@ INDEX_HTML = r"""<!doctype html>
     :root {
       --ink: #182026;
       --muted: #65727a;
-      --line: #ced8d5;
-      --paper: #f2f5f3;
+      --line: #d4ded9;
+      --paper: #eef3ef;
       --panel: #ffffff;
       --panel-2: #edf3ef;
       --black: #192227;
@@ -40,7 +40,8 @@ INDEX_HTML = r"""<!doctype html>
       --amber: #9b6a18;
       --blue: #245c85;
       --teal: #0b6d70;
-      --shadow: 0 14px 30px rgba(24, 32, 38, .08);
+      --shadow: 0 16px 36px rgba(24, 32, 38, .09);
+      --soft-shadow: 0 8px 18px rgba(24, 32, 38, .06);
     }
     * { box-sizing: border-box; }
     body {
@@ -50,6 +51,8 @@ INDEX_HTML = r"""<!doctype html>
       background:
         linear-gradient(90deg, rgba(36, 92, 133, .05) 1px, transparent 1px),
         linear-gradient(rgba(11, 109, 112, .045) 1px, transparent 1px),
+        radial-gradient(circle at 12% 0%, rgba(31, 122, 77, .1), transparent 24%),
+        radial-gradient(circle at 88% 10%, rgba(36, 92, 133, .11), transparent 28%),
         var(--paper);
       background-size: 32px 32px;
     }
@@ -79,6 +82,7 @@ INDEX_HTML = r"""<!doctype html>
       background: var(--panel);
       color: var(--ink);
       padding: 9px 14px;
+      border-radius: 999px;
     }
     .tab-button.active {
       border-color: var(--black);
@@ -92,6 +96,7 @@ INDEX_HTML = r"""<!doctype html>
       padding: 12px;
       min-height: 72px;
       box-shadow: var(--shadow);
+      border-radius: 8px;
     }
     .market-status strong { display: block; font-size: 13px; text-transform: uppercase; }
     .state { margin-top: 8px; font-size: 20px; font-weight: 800; }
@@ -99,6 +104,23 @@ INDEX_HTML = r"""<!doctype html>
     .state.closed, .state.post_market { color: var(--muted); }
     .state.pre_market, .state.break { color: var(--amber); }
     main { padding: 16px clamp(16px, 3vw, 36px) 36px; }
+    .overview-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .92);
+      padding: 14px;
+      min-height: 92px;
+      border-radius: 8px;
+      box-shadow: var(--soft-shadow);
+    }
+    .metric span { display: block; color: var(--muted); font-size: 12px; }
+    .metric strong { display: block; margin-top: 8px; font-size: 24px; line-height: 1; }
+    .metric small { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
     .home-grid, .config-grid {
       display: grid;
       grid-template-columns: minmax(420px, 1.35fr) minmax(320px, .85fr);
@@ -111,6 +133,8 @@ INDEX_HTML = r"""<!doctype html>
       background: rgba(255, 255, 255, .96);
       box-shadow: var(--shadow);
       margin-bottom: 18px;
+      border-radius: 8px;
+      overflow: hidden;
     }
     .section-head {
       display: flex;
@@ -126,6 +150,40 @@ INDEX_HTML = r"""<!doctype html>
     th { text-align: left; color: var(--muted); font-weight: 800; background: #f8faf9; }
     tr:last-child td { border-bottom: 0; }
     .ticker { font-size: 15px; font-weight: 800; color: var(--black); }
+    .card-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px; }
+    .holding-card, .topic-card {
+      border: 1px solid var(--line);
+      background: #fbfdfc;
+      border-radius: 8px;
+      padding: 12px;
+      min-width: 0;
+      box-shadow: var(--soft-shadow);
+    }
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }
+    .market-badge {
+      border: 1px solid #bdd0cc;
+      background: #eff6f3;
+      color: var(--teal);
+      padding: 3px 7px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .quote-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+      padding: 9px 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 9px;
+    }
     .pill {
       display: inline-flex;
       align-items: center;
@@ -137,6 +195,8 @@ INDEX_HTML = r"""<!doctype html>
       margin: 2px 4px 2px 0;
     }
     .price { font-variant-numeric: tabular-nums; font-weight: 800; }
+    .topic-meta { display: grid; gap: 8px; }
+    .topic-meta strong { font-size: 12px; color: var(--muted); }
     .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px; }
     .wide { grid-column: 1 / -1; }
     label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
@@ -205,7 +265,7 @@ INDEX_HTML = r"""<!doctype html>
     .toast.show { opacity: 1; transform: translateY(0); }
     [hidden] { display: none !important; }
     @media (max-width: 960px) {
-      header, .home-grid, .config-grid { grid-template-columns: 1fr; }
+      header, .home-grid, .config-grid, .overview-grid, .card-list { grid-template-columns: 1fr; }
       .status-strip, .form-grid { grid-template-columns: 1fr; }
       .tabs { overflow-x: auto; }
     }
@@ -225,11 +285,12 @@ INDEX_HTML = r"""<!doctype html>
   </nav>
   <main>
     <div class="tab-panel" id="tab-home">
+      <div class="overview-grid" id="overview"></div>
       <div class="home-grid">
         <div>
           <section>
             <div class="section-head">
-              <h2>持仓工作台</h2>
+              <h2>持仓概览</h2>
               <span class="subtle" id="holding-count"></span>
             </div>
             <div id="holdings"></div>
@@ -345,6 +406,13 @@ INDEX_HTML = r"""<!doctype html>
               </div>
             </form>
           </section>
+          <section>
+            <div class="section-head">
+              <h2>持仓列表</h2>
+              <span class="subtle" id="holding-config-count"></span>
+            </div>
+            <div id="holding-config-list"></div>
+          </section>
         </div>
         <div>
           <section>
@@ -400,6 +468,15 @@ INDEX_HTML = r"""<!doctype html>
       "'": "&#39;"
     }[char]));
     const marketLabel = market => market === "us_equities" ? "美股" : "A 股";
+    const stateLabel = value => ({
+      open: "开盘",
+      closed: "休市",
+      pre_market: "盘前",
+      post_market: "盘后",
+      overnight: "夜盘",
+      overnight_break: "夜盘休整",
+      break: "午间休市"
+    }[value] || value);
 
     function toast(text) {
       const el = document.getElementById("toast");
@@ -433,10 +510,23 @@ INDEX_HTML = r"""<!doctype html>
       root.innerHTML = Object.entries(markets).map(([market, item]) => `
         <div class="market-status">
           <strong>${market === "us_equities" ? "US Equities" : "A Share"}</strong>
-          <div class="state ${esc(item.state)}">${esc(item.state)}</div>
+          <div class="state ${esc(item.state)}">${esc(stateLabel(item.state))}</div>
           <div class="subtle">北京时间 ${esc(fmt(item.as_of_beijing).replace("T", " ").slice(0, 19))}</div>
         </div>
       `).join("");
+    }
+
+    function renderOverview(data) {
+      const markets = Object.entries(data.markets || {});
+      const openMarkets = markets.filter(([, item]) => item.state === "open").map(([market]) => marketLabel(market));
+      const quotedHoldings = (data.holdings || []).filter(item => item.quote).length;
+      const latestBrief = (data.briefs || [])[0];
+      document.getElementById("overview").innerHTML = `
+        <div class="metric"><span>交易状态</span><strong>${esc(openMarkets.length ? openMarkets.join(" / ") : "休市")}</strong><small>${esc(markets.map(([market, item]) => `${marketLabel(market)} ${stateLabel(item.state)}`).join(" · "))}</small></div>
+        <div class="metric"><span>组合覆盖</span><strong>${esc((data.holdings || []).length)}</strong><small>${quotedHoldings} 个已有最近行情</small></div>
+        <div class="metric"><span>盘中提醒</span><strong>${esc((data.notifications || []).length)}</strong><small>来自建议与 outbox 事件</small></div>
+        <div class="metric"><span>最新简报</span><strong>${latestBrief ? esc(latestBrief.name) : "暂无"}</strong><small>${latestBrief ? esc(latestBrief.modified_at.replace("T", " ").slice(0, 16)) : "briefs 目录为空"}</small></div>
+      `;
     }
 
     function renderHoldings(holdings) {
@@ -446,13 +536,35 @@ INDEX_HTML = r"""<!doctype html>
         root.innerHTML = `<div class="empty">还没有配置持仓。</div>`;
         return;
       }
+      root.innerHTML = `<div class="card-list">${holdings.map(h => `
+        <article class="holding-card">
+          <div class="card-top">
+            <div><div class="ticker">${esc(h.ticker)}</div><div class="subtle">${esc(fmt(h.company))}</div></div>
+            <span class="market-badge">${marketLabel(h.market)}</span>
+          </div>
+          <div class="quote-line">
+            <span class="subtle">最新行情</span>
+            ${h.quote ? `<span><span class="price">${esc(h.quote.price)}</span><br><span class="subtle">${esc(fmt(h.quote.observed_at).replace("T", " ").slice(0, 19))}</span></span>` : `<span class="subtle">暂无</span>`}
+          </div>
+          <div>${(h.themes || []).map(t => `<span class="pill">${esc(t)}</span>`).join("") || `<span class="subtle">未设置主题</span>`}</div>
+        </article>
+      `).join("")}</div>`;
+    }
+
+    function renderHoldingConfig(holdings) {
+      document.getElementById("holding-config-count").textContent = `${holdings.length} 个`;
+      const root = document.getElementById("holding-config-list");
+      if (!holdings.length) {
+        root.innerHTML = `<div class="empty">还没有配置持仓。</div>`;
+        return;
+      }
       root.innerHTML = `<table>
-        <thead><tr><th>标的</th><th>市场</th><th>最新行情</th><th>关注主题</th><th></th></tr></thead>
+        <thead><tr><th>标的</th><th>市场</th><th>行情代码</th><th>关注主题</th><th></th></tr></thead>
         <tbody>${holdings.map(h => `
           <tr>
             <td><div class="ticker">${esc(h.ticker)}</div><div class="subtle">${esc(fmt(h.company))}</div></td>
             <td>${marketLabel(h.market)}</td>
-            <td>${h.quote ? `<div class="price">${esc(h.quote.price)}</div><div class="subtle">${esc(fmt(h.quote.observed_at).replace("T", " ").slice(0, 19))}</div>` : `<span class="subtle">暂无行情</span>`}</td>
+            <td>${esc(h.symbol || h.ticker)}</td>
             <td>${(h.themes || []).map(t => `<span class="pill">${esc(t)}</span>`).join("") || `<span class="subtle">未设置</span>`}</td>
             <td><div class="inline-actions"><button class="ghost" data-edit-holding="${esc(h.market)}:${esc(h.ticker)}">编辑</button><button class="danger" data-delete="${esc(h.market)}:${esc(h.ticker)}">删除</button></div></td>
           </tr>
@@ -509,12 +621,30 @@ INDEX_HTML = r"""<!doctype html>
 
     function renderTopics(topics) {
       document.getElementById("topic-count").textContent = `${topics.length} 个 topic`;
-      document.getElementById("topic-config-count").textContent = `${topics.length} 个`;
       const root = document.getElementById("topics");
-      const configRoot = document.getElementById("topic-config-list");
       if (!topics.length) {
         root.innerHTML = `<div class="empty">还没有配置关注 topic。</div>`;
-        configRoot.innerHTML = `<div class="empty">还没有配置关注 topic。</div>`;
+        return;
+      }
+      root.innerHTML = `<div class="card-list">${topics.map(topic => `
+        <article class="topic-card">
+          <div class="card-top">
+            <div><div class="ticker">${esc(topic.name)}</div><div class="subtle">${esc(topic.id)}</div></div>
+            <span class="market-badge">${esc((topic.instruments || []).length)} 工具</span>
+          </div>
+          <div class="topic-meta">
+            <div><strong>主题标签</strong><br>${(topic.segments || []).flatMap(s => s.topics || []).map(t => `<span class="pill">${esc(t)}</span>`).join("") || `<span class="subtle">未设置</span>`}</div>
+            <div><strong>跟踪工具</strong><br>${(topic.instruments || []).map(i => `<span class="pill">${esc(i.symbol)}</span>`).join("") || `<span class="subtle">未设置</span>`}</div>
+          </div>
+        </article>
+      `).join("")}</div>`;
+    }
+
+    function renderTopicConfig(topics) {
+      document.getElementById("topic-config-count").textContent = `${topics.length} 个`;
+      const root = document.getElementById("topic-config-list");
+      if (!topics.length) {
+        root.innerHTML = `<div class="empty">还没有配置关注 topic。</div>`;
         return;
       }
       const rows = topics.map(topic => `
@@ -525,17 +655,15 @@ INDEX_HTML = r"""<!doctype html>
           <td><div class="inline-actions"><button class="ghost" data-edit-topic="${esc(topic.id)}">编辑</button><button class="danger" data-delete-topic="${esc(topic.id)}">删除</button></div></td>
         </tr>
       `).join("");
-      const table = `<table><thead><tr><th>名称</th><th>主题标签</th><th>工具</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
-      root.innerHTML = table;
-      configRoot.innerHTML = table;
-      document.querySelectorAll("[data-edit-topic]").forEach(button => {
+      root.innerHTML = `<table><thead><tr><th>名称</th><th>主题标签</th><th>工具</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+      root.querySelectorAll("[data-edit-topic]").forEach(button => {
         button.addEventListener("click", () => {
           const topic = (state.data.focus_topics || []).find(item => item.id === button.dataset.editTopic);
           if (topic) fillTopicForm(topic);
           openTab("config");
         });
       });
-      document.querySelectorAll("[data-delete-topic]").forEach(button => {
+      root.querySelectorAll("[data-delete-topic]").forEach(button => {
         button.addEventListener("click", async () => {
           await postJson("/api/topics/delete", {id: button.dataset.deleteTopic});
           toast("Topic 已删除");
@@ -595,10 +723,13 @@ INDEX_HTML = r"""<!doctype html>
       state.data = data;
       document.getElementById("clock").textContent = `本地更新时间 ${data.generated_at.replace("T", " ").slice(0, 19)}`;
       renderMarketStatus(data.markets || {});
+      renderOverview(data);
       renderHoldings(data.holdings || []);
+      renderHoldingConfig(data.holdings || []);
       renderAlerts(data.notifications || []);
       renderBriefs(data.briefs || []);
       renderTopics(data.focus_topics || []);
+      renderTopicConfig(data.focus_topics || []);
       if (!state.configDirty) renderConfiguration(data.configuration || {});
     }
 
