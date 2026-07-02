@@ -9,6 +9,11 @@
     "run_on_start": false
   },
   "market": {
+    "calendar": {
+      "provider": "config",
+      "path": "",
+      "strict": false
+    },
     "holidays": [],
     "extra_open_dates": [],
     "early_closes": {},

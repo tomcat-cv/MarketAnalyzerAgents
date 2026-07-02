@@ -5,7 +5,9 @@ import tempfile
 import unittest
 
 from marketanalyzeragents.intraday import (
+    MarketDataProviderError,
     build_suggestion,
+    fetch_market_data,
     fetch_yahoo_market_data,
     should_emit_suggestion,
     should_run_agent_debate,
@@ -21,7 +23,7 @@ class PortfolioWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "state.db"
             store = PortfolioStore(db_path)
-            self.assertEqual(store.connection.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(store.connection.execute("PRAGMA user_version").fetchone()[0], 2)
             self.assertEqual(store.connection.execute("PRAGMA busy_timeout").fetchone()[0], 30000)
             self.assertEqual(store.connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             self.assertEqual(store.connection.execute("PRAGMA journal_mode").fetchone()[0], "wal")
@@ -41,6 +43,45 @@ class PortfolioWorkflowTests(unittest.TestCase):
         self.assertIn("idx_operations_review", indexes)
         self.assertIn("idx_agent_discussions_suggestion", indexes)
         self.assertIn("idx_evidence_items_recent", indexes)
+        self.assertIn("idx_portfolio_snapshots_latest", indexes)
+        self.assertIn("idx_feishu_imports_status", indexes)
+
+    def test_confirmed_portfolio_snapshot_supersedes_previous_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PortfolioStore(Path(tmp) / "state.db")
+            first_id = store.save_portfolio_snapshot(
+                "us_equities",
+                [{"ticker": "NVDA", "company": "NVIDIA"}],
+                created_at="2026-06-01T09:00:00+08:00",
+                source_type="test",
+                status="confirmed",
+            )
+            second_id = store.save_portfolio_snapshot(
+                "us_equities",
+                [{"ticker": "MRVL", "company": "Marvell", "themes": ["custom silicon"]}],
+                created_at="2026-06-02T09:00:00+08:00",
+                source_type="test",
+                status="confirmed",
+            )
+            latest = store.latest_portfolio_snapshot("us_equities")
+            first_status = store.connection.execute(
+                "SELECT status FROM portfolio_snapshots WHERE id=?",
+                (first_id,),
+            ).fetchone()[0]
+            store.close()
+
+        self.assertNotEqual(first_id, second_id)
+        self.assertEqual(first_status, "superseded")
+        self.assertEqual(latest["holdings"][0]["ticker"], "MRVL")
+
+    def test_store_rejects_newer_schema_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "state.db"
+            with sqlite3.connect(db_path) as con:
+                con.execute("PRAGMA user_version = 999")
+
+            with self.assertRaises(RuntimeError):
+                PortfolioStore(db_path)
 
     def test_store_persists_and_filters_recent_evidence_by_ticker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -172,6 +213,53 @@ class PortfolioWorkflowTests(unittest.TestCase):
         self.assertEqual(data.metrics["max_drawdown_pct"], -10.0)
         self.assertEqual(len(rows), 3)
 
+    def test_market_data_provider_entrypoint_uses_configured_yahoo_window(self) -> None:
+        requested_urls = []
+
+        class Client:
+            def get_json(self, url):
+                requested_urls.append(url)
+                if "interval=1m" in url:
+                    timestamps = [1_780_998_000]
+                    closes = [102]
+                else:
+                    timestamps = [1_780_819_200, 1_780_905_600]
+                    closes = [100, 102]
+                return {
+                    "chart": {
+                        "result": [{
+                            "timestamp": timestamps,
+                            "indicators": {"quote": [{
+                                "open": closes,
+                                "high": closes,
+                                "low": closes,
+                                "close": closes,
+                                "volume": [1000] * len(closes),
+                            }]},
+                            "meta": {"chartPreviousClose": 100},
+                        }],
+                        "error": None,
+                    }
+                }
+
+        data = fetch_market_data(
+            Client(),
+            "us_equities",
+            "NVDA",
+            {"provider": "yahoo", "history_range": "1mo", "history_interval": "1d"},
+        )
+
+        self.assertEqual(data.quote.symbol, "NVDA")
+        self.assertTrue(any("range=1mo" in url and "interval=1d" in url for url in requested_urls))
+
+    def test_market_data_provider_entrypoint_rejects_unknown_provider(self) -> None:
+        class Client:
+            def get_json(self, url):
+                raise AssertionError("unknown providers should fail before network access")
+
+        with self.assertRaises(MarketDataProviderError):
+            fetch_market_data(Client(), "us_equities", "NVDA", {"provider": "licensed"})
+
     def test_missing_news_never_creates_directional_trade_advice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PortfolioStore(Path(tmp) / "state.db")
@@ -259,10 +347,16 @@ class PortfolioWorkflowTests(unittest.TestCase):
                 }
             )
             store.save_quotes(
-                [Quote("us_equities", "NVDA", "2026-06-09T16:00:00+00:00", 105)]
+                [
+                    Quote("us_equities", "NVDA", "2026-06-09T13:30:00+00:00", 98),
+                    Quote("us_equities", "NVDA", "2026-06-09T14:05:00+00:00", 101),
+                    Quote("us_equities", "NVDA", "2026-06-09T16:00:00+00:00", 105),
+                ]
             )
             review = build_daily_review(store, "us_equities", "2026-06-09")
         self.assertEqual(review["operations"][0]["available_suggestion"]["rationale"], "before")
+        self.assertEqual(review["operations"][0]["first_after_price"], 101.0)
+        self.assertEqual(review["operations"][0]["first_after_return_pct"], 1.0)
         self.assertEqual(review["operations"][0]["subsequent_return_pct"], 5.0)
 
     def test_discussion_transcript_is_linked_to_suggestion(self) -> None:

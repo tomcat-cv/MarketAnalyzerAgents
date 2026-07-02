@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import statistics
 import urllib.parse
-import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,90 +27,9 @@ class JsonlConversationPort:
             handle.write(json.dumps(dict(message), ensure_ascii=False) + "\n")
 
 
-class FeishuWebhookConversationPort:
-    def __init__(self, webhook_url: str, timeout: int = 10) -> None:
-        self.webhook_url = webhook_url
-        self.timeout = timeout
-
-    def deliver(self, message: Mapping[str, Any]) -> None:
-        text = format_conversation_message(message)
-        payload = json.dumps(
-            {"msg_type": "text", "content": {"text": text}},
-            ensure_ascii=False,
-        ).encode("utf-8")
-        request = urllib.request.Request(
-            self.webhook_url,
-            data=payload,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-        try:
-            result = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("Feishu webhook returned a non-JSON response.") from exc
-        if result.get("StatusCode", result.get("code", 0)) not in {0, None}:
-            raise RuntimeError(f"Feishu webhook failed: {result}")
-
-
-class CompositeConversationPort:
-    def __init__(self, ports: Sequence[ConversationPort]) -> None:
-        self.ports = tuple(ports)
-
-    def deliver(self, message: Mapping[str, Any]) -> None:
-        for port in self.ports:
-            port.deliver(message)
-
-
-def format_conversation_message(message: Mapping[str, Any]) -> str:
-    message_type = str(message.get("type", "intraday_suggestion"))
-    if message_type == "pre_market_brief":
-        market = str(message.get("market") or "unknown")
-        output = str(message.get("output", ""))
-        url = str(message.get("url") or "")
-        link = url or output
-        return "\n".join(
-            [
-                f"盘前简报已生成 [{market}]",
-                f"日期：{message.get('date', '')}",
-                f"路径：{output}",
-                f"链接：{link}" if link else "",
-                f"生成时间：{message.get('generated_at', '')}",
-            ]
-        ).strip()
-    if message_type == "intraday_agent_discussion":
-        return "\n".join(
-            [
-                f"盘中讨论记录 [{message.get('market', '')} {message.get('symbol', '')}]",
-                f"建议 ID：{message.get('suggestion_id', '')}",
-                f"轮次：{len(message.get('turns', [])) if isinstance(message.get('turns'), list) else 0}",
-            ]
-        ).strip()
-    if {"market", "symbol", "action", "rationale"} <= set(message):
-        evidence = message.get("evidence_ids", [])
-        return "\n".join(
-            [
-                f"盘中定时分析 [{message.get('market', '')} {message.get('symbol', '')}]",
-                f"时间：{message.get('created_at', '')}",
-                f"动作：{message.get('action', '')} / 置信度：{message.get('confidence', '')}",
-                f"依据：{message.get('rationale', '')}",
-                f"证据：{', '.join(str(item) for item in evidence) if evidence else '无'}",
-                f"失效条件：{message.get('invalidation', '')}",
-            ]
-        ).strip()
-    return json.dumps(dict(message), ensure_ascii=False, indent=2)
-
-
 def build_outbox(root: Path, settings: Mapping[str, Any]) -> ConversationPort:
     state = settings.get("state", {})
-    ports: list[ConversationPort] = [
-        JsonlConversationPort(root / state.get("conversation_outbox", "state/conversation-outbox.jsonl"))
-    ]
-    webhook_url = os.environ.get("FEISHU_WEBHOOK_URL", "").strip()
-    if webhook_url:
-        ports.append(FeishuWebhookConversationPort(webhook_url))
-    return CompositeConversationPort(ports)
+    return JsonlConversationPort(root / state.get("conversation_outbox", "state/conversation-outbox.jsonl"))
 
 
 @dataclass(frozen=True)
@@ -120,6 +37,14 @@ class MarketData:
     quote: Quote
     history: tuple[PriceBar, ...]
     metrics: Mapping[str, float | None]
+
+
+class MarketDataProviderError(ValueError):
+    pass
+
+
+class MarketDataProvider(Protocol):
+    def fetch(self, market: str, symbol: str) -> MarketData: ...
 
 
 def yahoo_symbol(market: str, symbol: str) -> str:
@@ -192,20 +117,6 @@ def _fetch_yahoo_chart(
     return bars, result.get("meta", {})
 
 
-def fetch_yahoo_bars(
-    client: HttpClient,
-    market: str,
-    symbol: str,
-    *,
-    interval: str,
-    range_value: str,
-) -> list[PriceBar]:
-    bars, _ = _fetch_yahoo_chart(
-        client, market, symbol, interval=interval, range_value=range_value
-    )
-    return bars
-
-
 def price_metrics(history: Sequence[PriceBar]) -> dict[str, float | None]:
     closes = [bar.close for bar in history]
     if len(closes) < 2:
@@ -261,14 +172,55 @@ def fetch_yahoo_market_data(
     )
 
 
+class YahooMarketDataProvider:
+    def __init__(
+        self,
+        client: HttpClient,
+        *,
+        history_range: str = "6mo",
+        history_interval: str = "1d",
+    ) -> None:
+        self.client = client
+        self.history_range = history_range
+        self.history_interval = history_interval
+
+    def fetch(self, market: str, symbol: str) -> MarketData:
+        return fetch_yahoo_market_data(
+            self.client,
+            market,
+            symbol,
+            history_range=self.history_range,
+            history_interval=self.history_interval,
+        )
+
+
+def build_market_data_provider(client: HttpClient, settings: Mapping[str, Any]) -> MarketDataProvider:
+    provider = str(settings.get("provider", "yahoo")).strip().lower()
+    if provider == "yahoo":
+        return YahooMarketDataProvider(
+            client,
+            history_range=str(settings.get("history_range", "6mo")),
+            history_interval=str(settings.get("history_interval", "1d")),
+        )
+    raise MarketDataProviderError(
+        f"Unsupported market-data provider: {provider or '(empty)'}. "
+        "Configured provider must be yahoo until another provider adapter is added."
+    )
+
+
+def fetch_market_data(
+    client: HttpClient,
+    market: str,
+    symbol: str,
+    settings: Mapping[str, Any],
+) -> MarketData:
+    return build_market_data_provider(client, settings).fetch(market, symbol)
+
+
 def market_history_payload(data: MarketData, limit: int) -> list[dict[str, Any]]:
     rows = [asdict(bar) for bar in data.history[-limit:]]
     rows.append({"type": "history_metrics", **data.metrics})
     return rows
-
-
-def fetch_yahoo_quote(client: HttpClient, market: str, symbol: str) -> Quote:
-    return fetch_yahoo_market_data(client, market, symbol).quote
 
 
 def build_suggestion(store: PortfolioStore, quote: Quote, evidence_ids: Sequence[str] = ()) -> dict[str, Any]:

@@ -34,6 +34,8 @@ class PriceBar:
 
 
 class PortfolioStore:
+    SCHEMA_VERSION = 2
+
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path, timeout=30)
@@ -41,9 +43,18 @@ class PortfolioStore:
         self.connection.execute("PRAGMA busy_timeout = 30000")
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("PRAGMA journal_mode = WAL")
+        self._initialize_schema()
+
+    def _initialize_schema(self) -> None:
+        current_version = int(self.connection.execute("PRAGMA user_version").fetchone()[0])
+        if current_version > self.SCHEMA_VERSION:
+            self.connection.close()
+            raise RuntimeError(
+                f"Database schema version {current_version} is newer than supported "
+                f"version {self.SCHEMA_VERSION}."
+            )
         self.connection.executescript(
             """
-            PRAGMA user_version = 1;
             CREATE TABLE IF NOT EXISTS quotes (
               market TEXT NOT NULL, symbol TEXT NOT NULL, observed_at TEXT NOT NULL,
               price REAL NOT NULL, previous_close REAL, volume REAL, source TEXT NOT NULL,
@@ -88,6 +99,28 @@ class PortfolioStore:
               PRIMARY KEY (retrieved_at, evidence_id),
               FOREIGN KEY (retrieved_at) REFERENCES evidence_packs(retrieved_at) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              market TEXT NOT NULL, created_at TEXT NOT NULL,
+              source_type TEXT NOT NULL, source_ref TEXT NOT NULL,
+              status TEXT NOT NULL, note TEXT NOT NULL,
+              payload_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS portfolio_snapshot_holdings (
+              snapshot_id INTEGER NOT NULL, market TEXT NOT NULL,
+              ticker TEXT NOT NULL, symbol TEXT NOT NULL, company TEXT NOT NULL,
+              quantity REAL, cost_basis REAL, currency TEXT NOT NULL,
+              themes_json TEXT NOT NULL, raw_json TEXT NOT NULL,
+              PRIMARY KEY (snapshot_id, ticker),
+              FOREIGN KEY (snapshot_id) REFERENCES portfolio_snapshots(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS feishu_portfolio_imports (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              event_id TEXT NOT NULL UNIQUE, market TEXT NOT NULL,
+              received_at TEXT NOT NULL, status TEXT NOT NULL,
+              image_path TEXT NOT NULL, ocr_text TEXT NOT NULL,
+              parsed_holdings_json TEXT NOT NULL, error TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_quotes_recent
               ON quotes (market, symbol, observed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_price_bars_recent
@@ -100,8 +133,13 @@ class PortfolioStore:
               ON agent_discussions (suggestion_id, turn_index);
             CREATE INDEX IF NOT EXISTS idx_evidence_items_recent
               ON evidence_items (evidence_level, published_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_latest
+              ON portfolio_snapshots (market, status, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_feishu_imports_status
+              ON feishu_portfolio_imports (market, status, received_at DESC);
             """
         )
+        self.connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
         self.connection.commit()
 
     def close(self) -> None:
@@ -235,6 +273,181 @@ class PortfolioStore:
         )
         self.connection.commit()
 
+    def save_portfolio_snapshot(
+        self,
+        market: str,
+        holdings: Sequence[Mapping[str, Any]],
+        *,
+        created_at: str,
+        source_type: str,
+        source_ref: str = "",
+        status: str = "confirmed",
+        note: str = "",
+    ) -> int:
+        if market not in {"a_share", "us_equities"}:
+            raise ValueError("market must be a_share or us_equities")
+        if status not in {"pending", "confirmed", "superseded", "rejected"}:
+            raise ValueError("invalid portfolio snapshot status")
+        payload = {"market": market, "holdings": [dict(item) for item in holdings]}
+        cursor = self.connection.execute(
+            """INSERT INTO portfolio_snapshots
+               (market,created_at,source_type,source_ref,status,note,payload_json)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                market,
+                created_at,
+                source_type,
+                source_ref,
+                status,
+                note,
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+        snapshot_id = int(cursor.lastrowid)
+        rows = []
+        seen: set[str] = set()
+        for holding in holdings:
+            ticker = str(holding.get("ticker", "")).strip().upper()
+            if not ticker or ticker in seen:
+                continue
+            seen.add(ticker)
+            themes = holding.get("themes", [])
+            if not isinstance(themes, list):
+                themes = []
+            rows.append(
+                (
+                    snapshot_id,
+                    market,
+                    ticker,
+                    str(holding.get("symbol", ticker)).strip() or ticker,
+                    str(holding.get("company", ticker)).strip() or ticker,
+                    holding.get("quantity"),
+                    holding.get("cost_basis"),
+                    str(holding.get("currency", "")).strip(),
+                    json.dumps([str(value) for value in themes], ensure_ascii=False),
+                    json.dumps(dict(holding), ensure_ascii=False),
+                )
+            )
+        self.connection.executemany(
+            """INSERT INTO portfolio_snapshot_holdings
+               (snapshot_id,market,ticker,symbol,company,quantity,cost_basis,currency,themes_json,raw_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+        if status == "confirmed":
+            self.connection.execute(
+                """UPDATE portfolio_snapshots SET status='superseded'
+                   WHERE market=? AND status='confirmed' AND id<>?""",
+                (market, snapshot_id),
+            )
+        self.connection.commit()
+        return snapshot_id
+
+    def latest_portfolio_snapshot(self, market: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """SELECT * FROM portfolio_snapshots
+               WHERE market=? AND status='confirmed'
+               ORDER BY created_at DESC, id DESC LIMIT 1""",
+            (market,),
+        ).fetchone()
+        if row is None:
+            return None
+        holdings = []
+        for item in self.connection.execute(
+            """SELECT * FROM portfolio_snapshot_holdings
+               WHERE snapshot_id=? ORDER BY ticker""",
+            (row["id"],),
+        ).fetchall():
+            try:
+                themes = json.loads(item["themes_json"])
+            except json.JSONDecodeError:
+                themes = []
+            holding = {
+                "ticker": item["ticker"],
+                "symbol": item["symbol"],
+                "company": item["company"],
+                "themes": themes,
+            }
+            if item["quantity"] is not None:
+                holding["quantity"] = item["quantity"]
+            if item["cost_basis"] is not None:
+                holding["cost_basis"] = item["cost_basis"]
+            if item["currency"]:
+                holding["currency"] = item["currency"]
+            holdings.append(holding)
+        return {
+            "id": row["id"],
+            "market": row["market"],
+            "created_at": row["created_at"],
+            "source_type": row["source_type"],
+            "source_ref": row["source_ref"],
+            "status": row["status"],
+            "note": row["note"],
+            "holdings": holdings,
+        }
+
+    def save_feishu_import(
+        self,
+        *,
+        event_id: str,
+        market: str,
+        received_at: str,
+        status: str,
+        image_path: str = "",
+        ocr_text: str = "",
+        parsed_holdings: Sequence[Mapping[str, Any]] = (),
+        error: str = "",
+    ) -> int:
+        cursor = self.connection.execute(
+            """INSERT OR REPLACE INTO feishu_portfolio_imports
+               (event_id,market,received_at,status,image_path,ocr_text,parsed_holdings_json,error)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                event_id,
+                market,
+                received_at,
+                status,
+                image_path,
+                ocr_text,
+                json.dumps([dict(item) for item in parsed_holdings], ensure_ascii=False),
+                error,
+            ),
+        )
+        self.connection.commit()
+        return int(cursor.lastrowid)
+
+    def feishu_import(self, import_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM feishu_portfolio_imports WHERE id=?",
+            (import_id,),
+        ).fetchone()
+
+    def confirm_feishu_import(self, import_id: int, created_at: str) -> int:
+        row = self.feishu_import(import_id)
+        if row is None:
+            raise ValueError("Feishu import not found")
+        if row["status"] != "pending_confirmation":
+            raise ValueError("Feishu import is not pending confirmation")
+        try:
+            holdings = json.loads(row["parsed_holdings_json"])
+        except json.JSONDecodeError as exc:
+            raise ValueError("Feishu import has invalid parsed holdings") from exc
+        snapshot_id = self.save_portfolio_snapshot(
+            row["market"],
+            holdings,
+            created_at=created_at,
+            source_type="feishu_screenshot",
+            source_ref=row["event_id"],
+            status="confirmed",
+            note=f"Confirmed Feishu import {row['event_id']}",
+        )
+        self.connection.execute(
+            "UPDATE feishu_portfolio_imports SET status='confirmed' WHERE id=?",
+            (import_id,),
+        )
+        self.connection.commit()
+        return snapshot_id
+
     def recent_summary_evidence_for_tickers(
         self,
         tickers: Sequence[str],
@@ -329,5 +542,12 @@ class PortfolioStore:
         return self.connection.execute(
             """SELECT * FROM suggestions WHERE market=? AND symbol=? AND created_at<=?
                ORDER BY created_at DESC LIMIT 1""",
+            (market, symbol, timestamp),
+        ).fetchone()
+
+    def first_quote_after(self, market: str, symbol: str, timestamp: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            """SELECT * FROM quotes WHERE market=? AND symbol=? AND observed_at>=?
+               ORDER BY observed_at ASC LIMIT 1""",
             (market, symbol, timestamp),
         ).fetchone()

@@ -2,22 +2,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time as time_module
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Sequence
 
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover - Python 3.8 fallback
-    ZoneInfo = None  # type: ignore
-
-from .collectors import HttpClient, collect_evidence, resolve_research_window, window_duration_hours
-from .agent_debate import backend_invoker, run_agent_debate
+from .brief_workflow import (
+    brief_delivery_path as _brief_delivery_path,
+    market_filtered_inputs as _market_filtered_inputs,
+    run_brief_command,
+    settings_for_market as _settings_for_market,
+    store_and_outbox as _store_and_outbox,
+    write_brief_outputs as _write_brief_outputs,
+)
+from .collectors import collect_evidence
 from .config import (
-    ensure_dirs,
     find_project_root,
     load_market_settings,
     load_settings,
@@ -25,52 +25,17 @@ from .config import (
     resolve_path,
 )
 from .env import load_dotenv
-from .evidence import (
-    EvidencePack,
-    configured_focus_topics,
-    configured_portfolio_holdings,
-    evidence_only_brief_markdown,
-    evidence_pack_markdown,
-    filter_evidence_pack,
-    model_summary_brief_markdown,
-    new_evidence_pack,
-    parse_model_brief,
-    source_log_markdown,
-    validate_summary_citations,
-)
-from .intraday import (
-    build_outbox,
-    build_suggestion,
-    fetch_yahoo_market_data,
-    market_history_payload,
-    should_emit_suggestion,
-    should_run_agent_debate,
-)
-from .market_calendar import market_status
-from .openai_runner import OpenAIError, run_openai
-from .portfolio_store import PortfolioStore
-from .prompting import build_openai_messages
+from .intraday_workflow import run_intraday_command
+from .market_calendar import calendar_from_settings, market_status
 from .scheduler import ScheduleError, local_now, next_run_at, seconds_until
+from .service_runtime import (
+    configured_brief_markets as _configured_brief_markets,
+    configured_intraday_markets as _configured_intraday_markets,
+    run_service_command,
+)
 from .review import build_daily_review
 from .web import run_web_server
-from .writer import (
-    markdown_to_html,
-    output_path_for,
-    run_stamp,
-    runs_dir_for,
-    source_log_path_for,
-    write_json,
-    write_text,
-)
-from .zhipu_runner import ZhipuError, run_zhipu
-
-
-def parse_date(value: str | None, timezone: str) -> date:
-    if value:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    if ZoneInfo is None:
-        return date.today()
-    return datetime.now(ZoneInfo(timezone)).date()
+from .writer import run_stamp, write_json
 
 
 def add_common_run_args(parser: argparse.ArgumentParser) -> None:
@@ -85,290 +50,8 @@ def add_common_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--market", choices=["a_share", "us_equities"], help="Generate a market-specific brief.")
 
 
-def _market_filtered_inputs(inputs: dict[str, Any], market: str | None) -> dict[str, Any]:
-    if market is None:
-        return inputs
-
-    def matches_market(value: Any) -> bool:
-        text = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
-        if market == "us_equities":
-            return "A股" not in text
-        return "美股" not in text and "S&P 500" not in text and "Nasdaq" not in text
-
-    sources = json.loads(json.dumps(inputs.get("sources", {}), ensure_ascii=False))
-    portfolios = sources.get("portfolios", {})
-    if isinstance(portfolios, dict):
-        for name in ("a_share", "us_equities"):
-            if name != market and isinstance(portfolios.get(name), dict):
-                portfolios[name]["holdings"] = []
-    market_scope = sources.get("market_scope", {})
-    if isinstance(market_scope, dict):
-        sources["market_scope"] = {market: market_scope.get(market, {})}
-    focus_topics = sources.get("focus_topics", [])
-    if isinstance(focus_topics, list):
-        for topic in focus_topics:
-            if not isinstance(topic, dict):
-                continue
-            if isinstance(topic.get("segments"), list):
-                topic["segments"] = [segment for segment in topic["segments"] if matches_market(segment)]
-            if isinstance(topic.get("instruments"), list):
-                topic["instruments"] = [
-                    instrument for instrument in topic["instruments"] if matches_market(instrument)
-                ]
-    collectors = sources.get("collectors", {})
-    if isinstance(collectors, dict):
-        yahoo = collectors.get("yahoo_market_snapshots", {})
-        if isinstance(yahoo, dict) and isinstance(yahoo.get("instruments"), list):
-            yahoo["instruments"] = [
-                instrument for instrument in yahoo["instruments"] if matches_market(instrument)
-            ]
-    filtered = dict(inputs)
-    filtered["sources"] = sources
-    return filtered
-
-
-def _settings_for_market(root: Path, settings: dict[str, Any], market: str | None) -> dict[str, Any]:
-    if market is None:
-        return settings
-    return load_market_settings(root, settings, market)
-
-
-def write_model_brief(
-    *,
-    result_text: str,
-    raw: dict[str, Any],
-    payload: dict[str, Any],
-    pack: EvidencePack,
-    prompt_path: Path,
-    system: str,
-    user: str,
-    runs_dir: Path,
-    stamp: str,
-    output_path: Path,
-    run_date: date,
-    holdings: Sequence[dict[str, Any]],
-    focus_topics: Sequence[dict[str, Any]],
-    market: str | None = None,
-) -> int:
-    write_text(prompt_path, f"# System\n\n{system}\n\n# User\n\n{user}\n")
-    write_json(runs_dir / f"{stamp}-request.json", payload)
-    write_json(runs_dir / f"{stamp}-response.json", raw)
-    write_text(runs_dir / f"{stamp}-model-output.txt", result_text)
-
-    model_pack = filter_evidence_pack(pack, {"summary"})
-    number_warnings: list[str] = []
-    try:
-        model_brief = parse_model_brief(
-            result_text, model_pack, holdings, warnings=number_warnings
-        )
-    except ValueError as exc:
-        write_json(runs_dir / f"{stamp}-validation-errors.json", [str(exc)])
-        print(f"Model summary failed structured-output validation: {exc}", file=sys.stderr)
-        return 2
-
-    if number_warnings:
-        write_json(runs_dir / f"{stamp}-validation-warnings.json", number_warnings)
-        for warning in number_warnings:
-            print(f"Warning: {warning}", file=sys.stderr)
-
-    brief_text = model_summary_brief_markdown(
-        pack,
-        model_brief.summaries,
-        model_brief.analyses,
-        run_date,
-        holdings=holdings,
-        focus_topics=focus_topics,
-        portfolio_actions=model_brief.portfolio_actions,
-        market_summaries=model_brief.market_summaries,
-        market=market,
-    )
-    write_text(runs_dir / f"{stamp}-brief-source.md", brief_text)
-    source_log_path = source_log_path_for(output_path)
-    write_text(runs_dir / f"{stamp}-source-log.md", source_log_markdown(pack))
-    write_text(source_log_path, source_log_markdown(pack))
-    validation_errors = validate_summary_citations(brief_text, pack)
-    if validation_errors:
-        write_json(runs_dir / f"{stamp}-validation-warnings.json", validation_errors)
-        print("Note: brief has citation validation notes (non-blocking):", file=sys.stderr)
-        for error in validation_errors:
-            print(f"- {error}", file=sys.stderr)
-
-    delivery_path = _write_brief_outputs(output_path, brief_text)
-    print(f"Brief written: {delivery_path}")
-    print(f"Source log written: {source_log_path}")
-    return 0
-
-
-def _write_brief_outputs(output_path: Path, brief_text: str) -> Path:
-    title = brief_text.splitlines()[0].lstrip("# ").strip() if brief_text.splitlines() else "Market Analyzer Brief"
-    html_text = markdown_to_html(brief_text, title=title)
-    if output_path.suffix.lower() == ".html":
-        write_text(output_path.with_suffix(".md"), brief_text)
-        write_text(output_path, html_text)
-        return output_path
-    write_text(output_path, brief_text)
-    html_path = output_path.with_suffix(".html")
-    write_text(html_path, html_text)
-    return html_path
-
-
-def _brief_delivery_path(output_path: Path) -> Path:
-    if output_path.suffix.lower() == ".html":
-        return output_path
-    html_path = output_path.with_suffix(".html")
-    return html_path if html_path.exists() else output_path
-
-
 def command_run(args: argparse.Namespace) -> int:
-    root = find_project_root()
-    load_dotenv(root / ".env")
-    settings = _settings_for_market(root, load_settings(root), getattr(args, "market", None))
-    backend = args.backend or settings.get("backend", "zhipu")
-    run_date = parse_date(args.date, str(settings.get("timezone", "Asia/Shanghai")))
-    inputs = _market_filtered_inputs(read_inputs(root, settings), getattr(args, "market", None))
-    holdings = configured_portfolio_holdings(inputs.get("sources", {}))
-    focus_topics = configured_focus_topics(inputs.get("sources", {}))
-    output_path = output_path_for(root, settings, run_date, args.output)
-    runs_dir = runs_dir_for(root, settings)
-    ensure_dirs([runs_dir, output_path.parent])
-
-    stamp = run_stamp()
-    if backend == "dry-run":
-        window_start, window_end, window_mode = resolve_research_window(settings)
-        local_tz = ZoneInfo(str(settings.get("timezone", "Asia/Shanghai"))) if ZoneInfo else None
-        pack = new_evidence_pack(
-            window_duration_hours(window_start, window_end),
-            window_start=window_start.astimezone(local_tz) if local_tz else window_start,
-            window_end=window_end.astimezone(local_tz) if local_tz else window_end,
-            window_mode=window_mode,
-            timezone_name=str(settings.get("timezone", "Asia/Shanghai")),
-        )
-        pack.retrieved_at = "dry-run"
-        pack.errors.append("Dry run does not access external evidence sources.")
-    else:
-        pack = collect_evidence(settings=settings, sources=inputs.get("sources", {}))
-        store, _ = _store_and_outbox(root, settings)
-        try:
-            store.save_evidence_pack(pack.to_dict())
-        finally:
-            store.close()
-        write_json(runs_dir / f"{stamp}-evidence.json", pack.to_dict())
-        write_text(runs_dir / f"{stamp}-evidence.md", evidence_pack_markdown(pack))
-        if not pack.items:
-            print("No verified evidence was collected; refusing to call the model.", file=sys.stderr)
-            for error in pack.errors:
-                print(f"- {error}", file=sys.stderr)
-            return 2
-
-    model_pack = filter_evidence_pack(pack, {"summary"})
-    if backend != "dry-run" and not model_pack.items:
-        brief_text = evidence_only_brief_markdown(
-            pack,
-            run_date,
-            holdings=holdings,
-            market=getattr(args, "market", None),
-        )
-        write_text(runs_dir / f"{stamp}-brief-source.md", brief_text)
-        source_log_path = source_log_path_for(output_path)
-        write_text(runs_dir / f"{stamp}-source-log.md", source_log_markdown(pack))
-        write_text(source_log_path, source_log_markdown(pack))
-        validation_errors = validate_summary_citations(brief_text, pack)
-        if validation_errors:
-            write_json(runs_dir / f"{stamp}-validation-errors.json", validation_errors)
-            print("Evidence-only brief failed citation validation.", file=sys.stderr)
-            return 2
-        delivery_path = _write_brief_outputs(output_path, brief_text)
-        print(f"Brief written without model inference: {delivery_path}")
-        print(f"Source log written: {source_log_path}")
-        _notify_pre_market_brief(root, settings, run_date, delivery_path)
-        return 0
-
-    if backend != "dry-run":
-        write_json(runs_dir / f"{stamp}-model-evidence.json", model_pack.to_dict())
-        write_text(runs_dir / f"{stamp}-model-evidence.md", evidence_pack_markdown(model_pack))
-
-    evidence_markdown = evidence_pack_markdown(model_pack)
-    system, user = build_openai_messages(
-        settings=settings,
-        inputs=inputs,
-        run_date=run_date,
-        evidence_markdown=evidence_markdown,
-    )
-    prompt_path = runs_dir / f"{stamp}-prompt.md"
-
-    if backend == "dry-run":
-        dry_content = f"# System\n\n{system}\n\n# User\n\n{user}\n"
-        write_text(prompt_path, dry_content)
-        print(f"Dry run prompt written: {prompt_path}")
-        print(f"Target brief path: {output_path}")
-        return 0
-
-    if backend == "openai":
-        try:
-            result, payload = run_openai(
-                settings=settings,
-                system=system,
-                user=user,
-                model_override=args.model,
-            )
-        except OpenAIError as exc:
-            print(f"OpenAI backend failed: {exc}", file=sys.stderr)
-            return 2
-
-        exit_code = write_model_brief(
-            result_text=result.text,
-            raw=result.raw,
-            payload=payload,
-            pack=pack,
-            prompt_path=prompt_path,
-            system=system,
-            user=user,
-            runs_dir=runs_dir,
-            stamp=stamp,
-            output_path=output_path,
-            run_date=run_date,
-            holdings=holdings,
-            focus_topics=focus_topics,
-            market=getattr(args, "market", None),
-        )
-        if exit_code == 0:
-            _notify_pre_market_brief(root, settings, run_date, _brief_delivery_path(output_path))
-        return exit_code
-
-    if backend == "zhipu":
-        try:
-            result, payload = run_zhipu(
-                settings=settings,
-                system=system,
-                user=user,
-                model_override=args.model,
-            )
-        except ZhipuError as exc:
-            print(f"Zhipu backend failed: {exc}", file=sys.stderr)
-            return 2
-
-        exit_code = write_model_brief(
-            result_text=result.text,
-            raw=result.raw,
-            payload=payload,
-            pack=pack,
-            prompt_path=prompt_path,
-            system=system,
-            user=user,
-            runs_dir=runs_dir,
-            stamp=stamp,
-            output_path=output_path,
-            run_date=run_date,
-            holdings=holdings,
-            focus_topics=focus_topics,
-            market=getattr(args, "market", None),
-        )
-        if exit_code == 0:
-            _notify_pre_market_brief(root, settings, run_date, _brief_delivery_path(output_path))
-        return exit_code
-
-    print(f"Unknown backend: {backend}", file=sys.stderr)
-    return 2
+    return run_brief_command(args)
 
 
 def command_collect(args: argparse.Namespace) -> int:
@@ -394,69 +77,6 @@ def command_collect(args: argparse.Namespace) -> int:
     return 0 if pack.items else 2
 
 
-def _notify_pre_market_brief(
-    root: Path,
-    settings: dict[str, Any],
-    run_date: date,
-    output_path: Path,
-) -> None:
-    outbox = build_outbox(root, settings)
-    base_url = os.environ.get("MARKET_ANALYZER_AGENTS_BRIEF_BASE_URL", "").strip().rstrip("/")
-    url = ""
-    output_dir = resolve_path(root, "briefs")
-    try:
-        relative_output = output_path.relative_to(output_dir)
-    except ValueError:
-        relative_output = output_path.name
-    if base_url:
-        url = f"{base_url}/{relative_output.as_posix() if isinstance(relative_output, Path) else relative_output}"
-    outbox.deliver(
-        {
-            "type": "pre_market_brief",
-            "market": settings.get("active_market"),
-            "date": run_date.isoformat(),
-            "output": str(output_path),
-            "url": url,
-            "generated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(timespec="seconds"),
-        }
-    )
-
-
-def _store_and_outbox(root: Path, settings: dict[str, Any]) -> tuple[PortfolioStore, Any]:
-    state = settings.get("state", {})
-    store = PortfolioStore(resolve_path(root, state.get("database_path", "state/portfolio.db")))
-    outbox = build_outbox(root, settings)
-    return store, outbox
-
-
-def _collect_and_store_evidence(root: Path, settings: dict[str, Any]) -> EvidencePack:
-    inputs = read_inputs(root, settings)
-    pack = collect_evidence(settings=settings, sources=inputs.get("sources", {}))
-    store, _ = _store_and_outbox(root, settings)
-    try:
-        store.save_evidence_pack(pack.to_dict())
-    finally:
-        store.close()
-    return pack
-
-
-def _stored_evidence_by_ticker(
-    store: PortfolioStore,
-    holdings: Sequence[dict[str, Any]],
-    *,
-    max_items_per_symbol: int,
-    lookback_hours: int,
-) -> dict[str, list[dict[str, Any]]]:
-    tickers = [str(holding.get("ticker", "")).upper().strip() for holding in holdings]
-    since = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-    grouped = store.recent_summary_evidence_for_tickers(tickers, since=since)
-    return {
-        ticker: items[:max_items_per_symbol]
-        for ticker, items in grouped.items()
-        if items
-    }
-
-
 def command_market_status(args: argparse.Namespace) -> int:
     root = find_project_root()
     settings = load_market_settings(root, load_settings(root), args.market)
@@ -466,6 +86,7 @@ def command_market_status(args: argparse.Namespace) -> int:
         holidays=market_settings.get("holidays", []),
         extra_open_dates=market_settings.get("extra_open_dates", []),
         early_closes=market_settings.get("early_closes", {}),
+        calendar=calendar_from_settings(market_settings, root=root),
     )
     print(json.dumps(status.__dict__, ensure_ascii=False, indent=2, default=str))
     return 0
@@ -473,130 +94,7 @@ def command_market_status(args: argparse.Namespace) -> int:
 
 def command_intraday(args: argparse.Namespace) -> int:
     root = find_project_root()
-    load_dotenv(root / ".env")
-    settings = load_market_settings(root, load_settings(root), args.market)
-    inputs = read_inputs(root, settings)
-    holdings = [
-        holding for holding in configured_portfolio_holdings(inputs.get("sources", {}))
-        if holding["market"] == args.market
-    ]
-    if not holdings:
-        print(f"No configured holdings for {args.market}.", file=sys.stderr)
-        return 2
-    store, outbox = _store_and_outbox(root, settings)
-    market_settings = settings.get("markets", {}).get(args.market, {})
-    agent_settings = settings.get("intraday_agents", {})
-    interval = args.interval or int(market_settings.get("poll_interval_seconds", 60))
-    debate_rounds = args.debate_rounds or int(agent_settings.get("debate_rounds", 1))
-    advice_backend = getattr(args, "advice_backend", None) or str(
-        agent_settings.get("advice_backend", "conservative")
-    )
-    if advice_backend not in {"conservative", "zhipu", "openai"}:
-        print(
-            "Invalid intraday_agents.advice_backend; expected conservative, zhipu, or openai.",
-            file=sys.stderr,
-        )
-        return 2
-    max_agent_evidence = int(agent_settings.get("max_evidence_items_per_symbol", 8))
-    history_points = int(agent_settings.get("price_history_points", 20))
-    market_data_settings = settings.get("market_data", {})
-    if market_data_settings.get("provider", "yahoo") != "yahoo":
-        print("Only the yahoo market-data provider is currently implemented.", file=sys.stderr)
-        return 2
-    client = HttpClient(
-        str(settings.get("collectors", {}).get("user_agent", "market-analyzer-agents/0.1")),
-        int(settings.get("collectors", {}).get("timeout_seconds", 30)),
-    )
-    while True:
-        status = market_status(
-            args.market,
-            holidays=market_settings.get("holidays", []),
-            extra_open_dates=market_settings.get("extra_open_dates", []),
-            early_closes=market_settings.get("early_closes", {}),
-        )
-        if status.state != "open" and not args.force:
-            print(f"{args.market} is {status.state}; no intraday polling performed.")
-            return 0
-        evidence_by_ticker = _stored_evidence_by_ticker(
-            store,
-            holdings,
-            max_items_per_symbol=max_agent_evidence,
-            lookback_hours=int(settings.get("lookback_hours", 24)),
-        )
-        if args.with_news:
-            pack = collect_evidence(settings=settings, sources=inputs.get("sources", {}))
-            store.save_evidence_pack(pack.to_dict())
-            for item in pack.items:
-                if item.evidence_level != "summary":
-                    continue
-                for ticker in item.matched_tickers:
-                    evidence_by_ticker.setdefault(ticker.upper(), []).insert(0, item.__dict__)
-        failures = []
-        for holding in holdings:
-            try:
-                data = fetch_yahoo_market_data(
-                    client,
-                    args.market,
-                    holding["symbol"],
-                    history_range=str(market_data_settings.get("history_range", "6mo")),
-                    history_interval=str(market_data_settings.get("history_interval", "1d")),
-                )
-            except Exception as exc:
-                failures.append((holding["symbol"], exc))
-                print(
-                    f"Intraday market data failed for {args.market} {holding['symbol']}: {exc}",
-                    file=sys.stderr,
-                )
-                continue
-            quote = data.quote
-            store.save_quotes([quote])
-            store.save_price_bars(data.history)
-            evidence = evidence_by_ticker.get(holding["ticker"].upper(), [])[:max_agent_evidence]
-            turns = []
-            suggestion = build_suggestion(
-                store, quote, [item["id"] for item in evidence]
-            )
-            if advice_backend != "conservative" and should_run_agent_debate(suggestion):
-                debate = run_agent_debate(
-                    quote=quote,
-                    evidence=evidence,
-                    invoke=backend_invoker(settings, advice_backend),
-                    rounds=debate_rounds,
-                    price_history=market_history_payload(data, history_points),
-                    portfolio=holding,
-                )
-                suggestion = {
-                    **debate.suggestion,
-                    "price_change_pct": suggestion.get("price_change_pct"),
-                    "signal": suggestion.get("signal"),
-                    "decision_source": "agent_debate",
-                }
-                turns = debate.turns
-            if not should_emit_suggestion(
-                suggestion,
-                emit_low_signal=bool(getattr(args, "emit_low_signal", False)),
-            ):
-                continue
-            suggestion["id"] = store.save_suggestion(suggestion)
-            if turns:
-                store.save_discussion(suggestion["id"], turns)
-                outbox.deliver(
-                    {
-                        "type": "intraday_agent_discussion",
-                        "suggestion_id": suggestion["id"],
-                        "market": quote.market,
-                        "symbol": quote.symbol,
-                        "turns": [turn.__dict__ for turn in turns],
-                    }
-                )
-            outbox.deliver(suggestion)
-            print(json.dumps(suggestion, ensure_ascii=False))
-        if len(failures) == len(holdings):
-            print(f"Intraday polling failed for all {args.market} holdings.", file=sys.stderr)
-            return 1
-        if not args.watch:
-            return 0
-        time_module.sleep(interval)
+    return run_intraday_command(args, root)
 
 
 def command_operation(args: argparse.Namespace) -> int:
@@ -645,17 +143,6 @@ def _run_once_from_schedule(args: argparse.Namespace) -> int:
         market=getattr(args, "market", None),
     )
     return command_run(run_args)
-
-
-def _configured_brief_markets(settings: dict[str, Any], requested_market: str | None = None) -> list[str]:
-    if requested_market:
-        return [requested_market]
-    paths = settings.get("market_config_paths", {})
-    if isinstance(paths, dict):
-        markets = [market for market in ("a_share", "us_equities") if market in paths]
-        if markets:
-            return markets
-    return []
 
 
 def _run_once_for_market(args: argparse.Namespace, market: str) -> int:
@@ -728,225 +215,9 @@ def command_schedule(args: argparse.Namespace) -> int:
             return 130
 
 
-def _configured_intraday_markets(
-    inputs: dict[str, Any],
-    requested_markets: Sequence[str] | None,
-) -> list[str]:
-    if requested_markets:
-        return list(dict.fromkeys(requested_markets))
-    markets = [
-        holding["market"]
-        for holding in configured_portfolio_holdings(inputs.get("sources", {}))
-        if holding.get("market") in {"a_share", "us_equities"}
-    ]
-    return list(dict.fromkeys(markets))
-
-
-def _write_service_health(
-    root: Path,
-    settings: dict[str, Any],
-    payload: dict[str, Any],
-) -> None:
-    service_settings = settings.get("service", {})
-    path = resolve_path(root, service_settings.get("health_path", "state/service-health.json"))
-    write_json(path, payload)
-
-
 def command_service(args: argparse.Namespace) -> int:
     root = find_project_root()
-    load_dotenv(root / ".env")
-    settings = load_settings(root)
-    inputs = read_inputs(root, settings)
-    intraday_markets = _configured_intraday_markets(inputs, args.markets)
-    brief_markets = [] if args.no_briefs else (args.markets or _configured_brief_markets(settings))
-    if not intraday_markets and not brief_markets and args.no_news_watch:
-        print(
-            "No configured markets and news watch is disabled. Add holdings, pass --markets, "
-            "configure market schedules, or enable news watch.",
-            file=sys.stderr,
-        )
-        return 2
-
-    next_brief_targets: dict[str, datetime] = {}
-    last_intraday_poll: dict[str, float] = {}
-    next_intraday_allowed: dict[str, float] = {}
-    failure_backoff: dict[str, float] = {}
-    market_health: dict[str, dict[str, Any]] = {market: {"state": "starting"} for market in intraday_markets}
-    news_health: dict[str, Any] = {"state": "starting"}
-    last_news_collect = 0.0
-    next_news_allowed = 0.0
-    news_failure_backoff = 0.0
-    last_retention_day = None
-    print(
-        "Service started. "
-        f"Brief schedule enabled={not args.no_briefs}; "
-        f"news watch enabled={not args.no_news_watch}; "
-        f"brief markets={', '.join(brief_markets) if brief_markets else 'none'}; "
-        f"intraday markets={', '.join(intraday_markets) if intraday_markets else 'none'}.",
-        flush=True,
-    )
-
-    while True:
-        try:
-            settings = load_settings(root)
-            now = local_now(str(settings.get("timezone", "Asia/Shanghai")))
-            service_settings = settings.get("service", {})
-            today = now.date().isoformat()
-            if last_retention_day != today:
-                store, _ = _store_and_outbox(root, settings)
-                try:
-                    pruned = store.prune_market_data(
-                        int(service_settings.get("retention_days", 120)),
-                    )
-                finally:
-                    store.close()
-                last_retention_day = today
-                print(f"Retention cleanup complete: {json.dumps(pruned, ensure_ascii=False)}", flush=True)
-            if not args.no_briefs:
-                brief_markets = args.markets or _configured_brief_markets(settings)
-                for market in brief_markets:
-                    market_settings = load_market_settings(root, settings, market)
-                    next_target = next_brief_targets.get(market)
-                    if next_target is None or next_target <= now:
-                        if next_target is not None:
-                            exit_code = _run_once_for_market(args, market)
-                            if exit_code != 0:
-                                print(
-                                    f"Scheduled brief failed for {market} with exit code {exit_code}.",
-                                    file=sys.stderr,
-                                )
-                        next_brief_targets[market] = next_run_at(now, market_settings)
-                        print(
-                            f"Next scheduled brief for {market}: {next_brief_targets[market].isoformat(timespec='seconds')}",
-                            flush=True,
-                        )
-
-            if not args.no_news_watch:
-                news_settings = settings.get("news_collection", {})
-                interval = int(args.news_interval or news_settings.get("interval_seconds", 900))
-                now_monotonic = time_module.monotonic()
-                if now_monotonic >= next_news_allowed and now_monotonic - last_news_collect >= interval:
-                    try:
-                        pack = _collect_and_store_evidence(root, settings)
-                        last_news_collect = now_monotonic
-                        next_news_allowed = 0.0
-                        news_failure_backoff = 0.0
-                        news_health = {
-                            "state": "collect_ok",
-                            "items": len(pack.items),
-                            "errors": len(pack.errors),
-                            "retrieved_at": pack.retrieved_at,
-                            "as_of_beijing": now.isoformat(),
-                        }
-                        print(
-                            f"News collection stored {len(pack.items)} items; warnings={len(pack.errors)}.",
-                            flush=True,
-                        )
-                    except Exception as exc:
-                        previous_backoff = news_failure_backoff or float(args.tick_seconds)
-                        news_failure_backoff = min(
-                            float(service_settings.get("max_backoff_seconds", 300)),
-                            max(float(args.tick_seconds), previous_backoff * 2),
-                        )
-                        next_news_allowed = time_module.monotonic() + news_failure_backoff
-                        news_health = {
-                            "state": "collect_failed",
-                            "error": str(exc),
-                            "backoff_seconds": news_failure_backoff,
-                            "as_of_beijing": now.isoformat(),
-                        }
-                        print(f"News collection failed: {exc}", file=sys.stderr)
-
-            for market in intraday_markets:
-                market_settings = load_market_settings(root, settings, market).get("markets", {}).get(market, {})
-                status = market_status(
-                    market,
-                    holidays=market_settings.get("holidays", []),
-                    extra_open_dates=market_settings.get("extra_open_dates", []),
-                    early_closes=market_settings.get("early_closes", {}),
-                )
-                if status.state != "open":
-                    market_health[market] = {
-                        "state": status.state,
-                        "as_of_beijing": status.as_of_beijing.isoformat(),
-                    }
-                    continue
-                interval = args.interval or int(market_settings.get("poll_interval_seconds", 60))
-                now_monotonic = time_module.monotonic()
-                allowed_at = next_intraday_allowed.get(market, 0.0)
-                if now_monotonic < allowed_at:
-                    continue
-                previous = last_intraday_poll.get(market)
-                if previous is not None and now_monotonic - previous < interval:
-                    continue
-                last_intraday_poll[market] = now_monotonic
-                intraday_args = argparse.Namespace(
-                    market=market,
-                    watch=False,
-                    interval=interval,
-                    force=False,
-                    with_news=args.with_news,
-                    advice_backend=args.advice_backend,
-                    debate_rounds=args.debate_rounds,
-                    emit_low_signal=args.emit_low_signal,
-                )
-                exit_code = command_intraday(intraday_args)
-                if exit_code != 0:
-                    previous_backoff = failure_backoff.get(market, float(args.tick_seconds))
-                    backoff = min(
-                        float(service_settings.get("max_backoff_seconds", 300)),
-                        max(float(args.tick_seconds), previous_backoff * 2),
-                    )
-                    failure_backoff[market] = backoff
-                    next_intraday_allowed[market] = time_module.monotonic() + backoff
-                    market_health[market] = {
-                        "state": "poll_failed",
-                        "exit_code": exit_code,
-                        "backoff_seconds": backoff,
-                        "as_of_beijing": now.isoformat(),
-                    }
-                    print(
-                        f"Intraday poll failed for {market} with exit code {exit_code}.",
-                        file=sys.stderr,
-                    )
-                else:
-                    failure_backoff.pop(market, None)
-                    next_intraday_allowed.pop(market, None)
-                    market_health[market] = {
-                        "state": "poll_ok",
-                        "as_of_beijing": now.isoformat(),
-                    }
-            _write_service_health(
-                root,
-                settings,
-                {
-                    "status": "running",
-                    "updated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(),
-                    "brief_schedule_enabled": not args.no_briefs,
-                    "news_watch_enabled": not args.no_news_watch,
-                    "next_brief_targets": {
-                        market: target.isoformat() for market, target in next_brief_targets.items()
-                    },
-                    "news": news_health,
-                    "markets": market_health,
-                },
-            )
-            time_module.sleep(args.tick_seconds)
-        except KeyboardInterrupt:
-            _write_service_health(
-                root,
-                settings,
-                {
-                    "status": "stopped",
-                    "updated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(),
-                    "markets": market_health,
-                },
-            )
-            print("Service stopped.")
-            return 130
-        except ScheduleError as exc:
-            print(f"Invalid schedule configuration: {exc}", file=sys.stderr)
-            return 2
+    return run_service_command(args, root)
 
 
 def build_parser() -> argparse.ArgumentParser:

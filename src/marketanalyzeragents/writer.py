@@ -109,5 +109,16 @@ def write_json(path: Path, payload: Any) -> Path:
     return path
 
 
+def write_json_atomic(path: Path, payload: Any) -> Path:
+    ensure_dirs([path.parent])
+    tmp_path = path.with_name(f".{path.name}.{run_stamp()}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
+    return path
+
+
 def run_stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S-%f")

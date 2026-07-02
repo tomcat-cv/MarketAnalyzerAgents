@@ -9,8 +9,15 @@ def build_daily_review(store: PortfolioStore, market: str, day: str) -> dict[str
     entries = []
     for operation in store.operations_for_date(market, day):
         suggestion = store.latest_suggestion_before(market, operation["symbol"], operation["operated_at"])
+        first_after = store.first_quote_after(market, operation["symbol"], operation["operated_at"])
         later = store.recent_quotes(market, operation["symbol"], 1)
+        first_after_price = float(first_after["price"]) if first_after else None
         later_price = float(later[0]["price"]) if later else None
+        first_after_return_pct = (
+            round((first_after_price / float(operation["price"]) - 1) * 100, 4)
+            if first_after_price is not None and operation["price"]
+            else None
+        )
         return_pct = (
             round((later_price / float(operation["price"]) - 1) * 100, 4)
             if later_price is not None and operation["price"]
@@ -20,6 +27,8 @@ def build_daily_review(store: PortfolioStore, market: str, day: str) -> dict[str
             {
                 "operation": dict(operation),
                 "available_suggestion": dict(suggestion) if suggestion else None,
+                "first_after_price": first_after_price,
+                "first_after_return_pct": first_after_return_pct,
                 "latest_price": later_price,
                 "subsequent_return_pct": return_pct,
                 "process_note": (

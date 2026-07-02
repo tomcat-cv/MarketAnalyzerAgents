@@ -28,8 +28,16 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "conversation_outbox": "state/conversation-outbox.jsonl",
     },
     "markets": {
-        "a_share": {"holidays": [], "poll_interval_seconds": 60},
-        "us_equities": {"holidays": [], "poll_interval_seconds": 60},
+        "a_share": {
+            "calendar": {"provider": "config", "path": "", "strict": False},
+            "holidays": [],
+            "poll_interval_seconds": 60,
+        },
+        "us_equities": {
+            "calendar": {"provider": "config", "path": "", "strict": False},
+            "holidays": [],
+            "poll_interval_seconds": 60,
+        },
     },
     "market_data": {
         "provider": "yahoo",
@@ -186,10 +194,15 @@ def read_optional_text(path: Path) -> str:
 def read_inputs(root: Path, settings: Mapping[str, Any]) -> Dict[str, Any]:
     context_path = resolve_path(root, settings["context_path"])
     sources_path = resolve_path(root, settings["sources_path"])
+    sources = load_json(sources_path, {})
+    if isinstance(sources, Mapping):
+        from .portfolio_snapshots import apply_current_portfolio_snapshots
+
+        sources = apply_current_portfolio_snapshots(root, settings, sources)
 
     return {
         "context": read_optional_text(context_path),
-        "sources": load_json(sources_path, {}),
+        "sources": sources if isinstance(sources, dict) else {},
         "paths": {
             "context": str(context_path),
             "sources": str(sources_path),

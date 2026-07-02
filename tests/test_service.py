@@ -20,7 +20,7 @@ from marketanalyzeragents.cli import (
     command_intraday,
 )
 from marketanalyzeragents.evidence import EvidenceItem, EvidencePack
-from marketanalyzeragents.intraday import FeishuWebhookConversationPort, MarketData, format_conversation_message
+from marketanalyzeragents.intraday import MarketData, build_outbox
 from marketanalyzeragents.portfolio_store import PriceBar, Quote
 
 
@@ -106,21 +106,6 @@ class ServiceCommandTests(unittest.TestCase):
             ["^GSPC", "GC=F"],
         )
 
-    def test_feishu_formatter_renders_brief_link(self) -> None:
-        text = format_conversation_message(
-            {
-                "type": "pre_market_brief",
-                "market": "us_equities",
-                "date": "2026-06-23",
-                "output": "briefs/us_equities/2026-06-23-brief.html",
-                "url": "http://example.test/us_equities/2026-06-23-brief.html",
-                "generated_at": "2026-06-23T20:00:00+08:00",
-            }
-        )
-
-        self.assertIn("盘前简报已生成 [us_equities]", text)
-        self.assertIn("http://example.test/us_equities/2026-06-23-brief.html", text)
-
     def test_brief_delivery_prefers_html_copy_for_markdown_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / "briefs" / "us_equities" / "2026-06-23-brief.md"
@@ -131,43 +116,17 @@ class ServiceCommandTests(unittest.TestCase):
             self.assertEqual(_brief_delivery_path(output_path), output_path.with_suffix(".html"))
             self.assertIn('<meta charset="utf-8">', delivery_path.read_text(encoding="utf-8"))
 
-    def test_feishu_webhook_posts_text_payload(self) -> None:
-        captured = {}
+    def test_outbox_remains_jsonl_when_legacy_feishu_env_is_set(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = {"state": {"conversation_outbox": "state/outbox.jsonl"}}
+            with patch.dict(os.environ, {"FEISHU_WEBHOOK_URL": "https://example.test/webhook"}):
+                outbox = build_outbox(root, settings)
+                outbox.deliver({"type": "test", "message": "kept local"})
 
-        class FakeResponse:
-            def __enter__(self):
-                return self
+            rows = (root / "state" / "outbox.jsonl").read_text(encoding="utf-8").splitlines()
 
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return b'{"StatusCode":0}'
-
-        def fake_urlopen(request, timeout):
-            captured["body"] = request.data.decode("utf-8")
-            captured["timeout"] = timeout
-            return FakeResponse()
-
-        port = FeishuWebhookConversationPort("https://example.test/webhook", timeout=3)
-        with patch("marketanalyzeragents.intraday.urllib.request.urlopen", side_effect=fake_urlopen):
-            port.deliver(
-                {
-                    "market": "us_equities",
-                    "symbol": "NVDA",
-                    "created_at": "2026-06-22T22:00:00+08:00",
-                    "action": "观察",
-                    "confidence": "低",
-                    "rationale": "测试",
-                    "evidence_ids": [],
-                    "invalidation": "测试结束",
-                }
-            )
-
-        payload = json.loads(captured["body"])
-        self.assertEqual(payload["msg_type"], "text")
-        self.assertIn("盘中定时分析 [us_equities NVDA]", payload["content"]["text"])
-        self.assertEqual(captured["timeout"], 3)
+        self.assertEqual(json.loads(rows[0]), {"type": "test", "message": "kept local"})
 
     def test_service_command_exposes_unified_runtime_options(self) -> None:
         parser = build_parser()
@@ -236,7 +195,7 @@ class ServiceCommandTests(unittest.TestCase):
                 emit_low_signal=False,
             )
 
-            def fake_fetch(client, market, symbol, *, history_range, history_interval):
+            def fake_fetch(client, market, symbol, settings):
                 return MarketData(
                     quote=Quote("us_equities", "MRVL", "2026-06-23T17:57:04+00:00", 100.04, 100),
                     history=(
@@ -260,10 +219,10 @@ class ServiceCommandTests(unittest.TestCase):
             os.chdir(root)
             try:
                 with patch(
-                    "marketanalyzeragents.cli.fetch_yahoo_market_data",
+                    "marketanalyzeragents.intraday_workflow.fetch_market_data",
                     side_effect=fake_fetch,
                 ), patch(
-                    "marketanalyzeragents.cli.run_agent_debate",
+                    "marketanalyzeragents.intraday_workflow.run_agent_debate",
                     return_value=argparse.Namespace(
                         suggestion={
                             "market": "us_equities",
@@ -363,7 +322,7 @@ class ServiceCommandTests(unittest.TestCase):
                 emit_low_signal=False,
             )
 
-            def fake_fetch(client, market, symbol, *, history_range, history_interval):
+            def fake_fetch(client, market, symbol, settings):
                 return MarketData(
                     quote=Quote("us_equities", "NVDA", datetime.now(timezone.utc).isoformat(), 103, 100),
                     history=(),
@@ -374,10 +333,10 @@ class ServiceCommandTests(unittest.TestCase):
             os.chdir(root)
             try:
                 with patch(
-                    "marketanalyzeragents.cli.fetch_yahoo_market_data",
+                    "marketanalyzeragents.intraday_workflow.fetch_market_data",
                     side_effect=fake_fetch,
                 ), patch(
-                    "marketanalyzeragents.cli.run_agent_debate",
+                    "marketanalyzeragents.intraday_workflow.run_agent_debate",
                     return_value=argparse.Namespace(
                         suggestion={
                             "market": "us_equities",
@@ -443,7 +402,7 @@ class ServiceCommandTests(unittest.TestCase):
                 emit_low_signal=False,
             )
 
-            def fake_fetch(client, market, symbol, *, history_range, history_interval):
+            def fake_fetch(client, market, symbol, settings):
                 return MarketData(
                     quote=Quote("us_equities", "MRVL", "2026-06-23T17:57:04+00:00", 103, 100),
                     history=(
@@ -499,13 +458,13 @@ class ServiceCommandTests(unittest.TestCase):
             os.chdir(root)
             try:
                 with patch(
-                    "marketanalyzeragents.cli.fetch_yahoo_market_data",
+                    "marketanalyzeragents.intraday_workflow.fetch_market_data",
                     side_effect=fake_fetch,
                 ), patch(
-                    "marketanalyzeragents.cli.collect_evidence",
+                    "marketanalyzeragents.intraday_workflow.collect_evidence",
                     return_value=evidence,
                 ), patch(
-                    "marketanalyzeragents.cli.run_agent_debate",
+                    "marketanalyzeragents.intraday_workflow.run_agent_debate",
                     side_effect=fake_debate,
                 ) as debate, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     exit_code = command_intraday(args)
@@ -557,7 +516,7 @@ class ServiceCommandTests(unittest.TestCase):
                 emit_low_signal=False,
             )
 
-            def fake_fetch(client, market, symbol, *, history_range, history_interval):
+            def fake_fetch(client, market, symbol, settings):
                 if symbol == "MU":
                     raise ValueError("No usable market data returned for MU")
                 return MarketData(
@@ -600,10 +559,10 @@ class ServiceCommandTests(unittest.TestCase):
             os.chdir(root)
             try:
                 with patch(
-                    "marketanalyzeragents.cli.fetch_yahoo_market_data",
+                    "marketanalyzeragents.intraday_workflow.fetch_market_data",
                     side_effect=fake_fetch,
                 ), patch(
-                    "marketanalyzeragents.cli.collect_evidence",
+                    "marketanalyzeragents.intraday_workflow.collect_evidence",
                     return_value=evidence,
                 ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     exit_code = command_intraday(args)

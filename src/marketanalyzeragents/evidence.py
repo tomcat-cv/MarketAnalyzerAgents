@@ -389,21 +389,6 @@ def filter_evidence_pack(pack: EvidencePack, levels: set[str]) -> EvidencePack:
     )
 
 
-def evidence_review_queue_markdown(pack: EvidencePack) -> str:
-    review_items = [item for item in pack.items if item.evidence_level != "summary"]
-    if not review_items:
-        return ""
-    parts = [
-        "## Evidence Review Queue",
-        "",
-        "以下条目只有标题或提交元数据，未交给大模型分析。请打开原始来源核验详情：",
-        "",
-    ]
-    for item in review_items:
-        parts.append(f"- **{item.id} · {item.title}** — [{item.source_name}]({evidence_display_url(item)})")
-    return "\n".join(parts).strip() + "\n"
-
-
 def _extract_model_payload(text: str) -> Mapping[str, Any]:
     candidate = text.strip()
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, flags=re.DOTALL | re.IGNORECASE)
@@ -1172,6 +1157,3 @@ def validate_summary_citations(text: str, pack: EvidencePack) -> List[str]:
         errors.append("The generated brief contains no evidence source URLs.")
     return errors
 
-
-def evidence_pack_json(pack: EvidencePack) -> str:
-    return json.dumps(pack.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)

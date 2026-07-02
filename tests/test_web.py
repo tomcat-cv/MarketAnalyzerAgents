@@ -8,6 +8,9 @@ from marketanalyzeragents.intraday import MarketData
 from marketanalyzeragents.portfolio_store import PriceBar, Quote
 from marketanalyzeragents.web import (
     INDEX_HTML,
+    STATIC_DIR,
+    confirm_feishu_portfolio_import,
+    create_feishu_portfolio_import,
     delete_focus_topic,
     delete_holding,
     load_dashboard_state,
@@ -75,6 +78,26 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("us_equities", state["markets"])
         self.assertEqual(state["configuration"]["backend"], "zhipu")
 
+    def test_dashboard_state_prefers_confirmed_portfolio_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            settings = json.loads((root / "config" / "settings.json").read_text(encoding="utf-8"))
+            from marketanalyzeragents.portfolio_store import PortfolioStore
+
+            with PortfolioStore(root / "state" / "portfolio.db") as store:
+                store.save_portfolio_snapshot(
+                    "us_equities",
+                    [{"ticker": "MRVL", "company": "Marvell"}],
+                    created_at="2026-06-24T09:00:00+08:00",
+                    source_type="test",
+                    status="confirmed",
+                )
+
+            state = load_dashboard_state(root)
+
+        self.assertEqual([holding["ticker"] for holding in state["holdings"]], ["MRVL"])
+
     def test_dashboard_refresh_fetches_current_quotes_before_rendering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -94,7 +117,7 @@ class WebDashboardTests(unittest.TestCase):
             )
 
             with patch(
-                "marketanalyzeragents.web.fetch_yahoo_market_data",
+                "marketanalyzeragents.web.fetch_market_data",
                 return_value=MarketData(quote=quote, history=history, metrics={}),
             ) as fetch:
                 state = load_dashboard_state(root, refresh_quotes=True)
@@ -127,6 +150,65 @@ class WebDashboardTests(unittest.TestCase):
         holdings = sources["portfolios"]["us_equities"]["holdings"]
         self.assertEqual([holding["ticker"] for holding in holdings], ["MRVL"])
         self.assertEqual(holdings[0]["themes"], ["custom silicon", "optical DSP"])
+
+    def test_holding_update_rejects_invalid_theme_payload_without_rewriting_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            before = (root / "config" / "sources.json").read_text(encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                upsert_holding(
+                    root,
+                    {
+                        "market": "us_equities",
+                        "ticker": "MRVL",
+                        "themes": {"invalid": "shape"},
+                    },
+                )
+
+            after = (root / "config" / "sources.json").read_text(encoding="utf-8")
+
+        self.assertEqual(after, before)
+
+    def test_holding_update_accepts_newline_delimited_theme_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+
+            holding = upsert_holding(
+                root,
+                {
+                    "market": "us_equities",
+                    "ticker": "MRVL",
+                    "themes": "custom silicon\noptical DSP",
+                },
+            )
+
+        self.assertEqual(holding["themes"], ["custom silicon", "optical DSP"])
+
+    def test_feishu_import_requires_confirmation_before_snapshot_becomes_current(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            settings = json.loads((root / "config" / "settings.json").read_text(encoding="utf-8"))
+            created = create_feishu_portfolio_import(
+                root,
+                settings,
+                {
+                    "event_id": "evt-1",
+                    "market": "us_equities",
+                    "ocr_text": "ticker,company,quantity\nMRVL,Marvell,10",
+                },
+            )
+            before = load_dashboard_state(root)
+            confirmed = confirm_feishu_portfolio_import(root, settings, created["id"])
+            after = load_dashboard_state(root)
+
+        self.assertEqual(created["status"], "pending_confirmation")
+        self.assertEqual(before["holdings"][0]["ticker"], "NVDA")
+        self.assertEqual(confirmed["status"], "confirmed")
+        self.assertEqual(after["holdings"][0]["ticker"], "MRVL")
 
     def test_model_configuration_updates_settings_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -184,8 +266,9 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(sources["focus_topics"], [])
 
     def test_home_rendering_is_read_only_and_config_keeps_actions(self) -> None:
-        home_renderer = INDEX_HTML.split("function renderHoldings", 1)[1].split("function renderHoldingConfig", 1)[0]
-        config_renderer = INDEX_HTML.split("function renderHoldingConfig", 1)[1].split("function renderAlerts", 1)[0]
+        app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        home_renderer = app_js.split("function renderHoldings", 1)[1].split("function renderHoldingConfig", 1)[0]
+        config_renderer = app_js.split("function renderHoldingConfig", 1)[1].split("function renderAlerts", 1)[0]
 
         self.assertNotIn("data-edit-holding", home_renderer)
         self.assertNotIn("data-delete", home_renderer)
@@ -193,9 +276,12 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("data-delete", config_renderer)
 
     def test_dashboard_template_labels_displayed_times(self) -> None:
-        self.assertIn("function formatTime", INDEX_HTML)
-        self.assertIn("display_timezone", INDEX_HTML)
-        self.assertIn("更新时间 ${formatTime(data.generated_at, data.display_timezone)}", INDEX_HTML)
+        app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function formatTime", app_js)
+        self.assertIn("display_timezone", app_js)
+        self.assertIn("更新时间 ${formatTime(data.generated_at, data.display_timezone)}", app_js)
+        self.assertIn('/static/styles.css', INDEX_HTML)
+        self.assertIn('/static/app.js', INDEX_HTML)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,11 @@
 from datetime import datetime
+import json
+from pathlib import Path
+import tempfile
 import unittest
 from zoneinfo import ZoneInfo
 
-from marketanalyzeragents.market_calendar import market_status
+from marketanalyzeragents.market_calendar import calendar_from_settings, market_status
 
 
 class MarketCalendarTests(unittest.TestCase):
@@ -57,6 +60,45 @@ class MarketCalendarTests(unittest.TestCase):
             early_closes={"2026-07-02": "13:00"},
         )
         self.assertEqual(status.state, "post_market")
+
+    def test_file_calendar_overrides_weekend_and_early_close(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calendar_path = root / "us-calendar.json"
+            calendar_path.write_text(
+                json.dumps(
+                    {
+                        "source": "unit-test-calendar",
+                        "trading_days": ["2026-07-04"],
+                        "early_closes": {"2026-07-04": "13:00"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            calendar = calendar_from_settings(
+                {
+                    "calendar": {
+                        "provider": "file",
+                        "path": "us-calendar.json",
+                        "strict": True,
+                    }
+                },
+                root=root,
+            )
+
+        open_status = market_status(
+            "us_equities",
+            datetime(2026, 7, 4, 22, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            calendar=calendar,
+        )
+        closed_status = market_status(
+            "us_equities",
+            datetime(2026, 7, 5, 1, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+            calendar=calendar,
+        )
+
+        self.assertEqual(open_status.state, "open")
+        self.assertEqual(closed_status.state, "post_market")
 
 
 if __name__ == "__main__":

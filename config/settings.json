@@ -20,10 +20,20 @@
   },
   "markets": {
     "a_share": {
+      "calendar": {
+        "provider": "config",
+        "path": "",
+        "strict": false
+      },
       "holidays": [],
       "poll_interval_seconds": 1800
     },
     "us_equities": {
+      "calendar": {
+        "provider": "config",
+        "path": "",
+        "strict": false
+      },
       "holidays": [],
       "poll_interval_seconds": 1800
     }
