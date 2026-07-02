@@ -87,10 +87,18 @@ class PortfolioAction:
 
 
 @dataclass
+class MarketSummary:
+    topic: str
+    summary: str
+    evidence_ids: List[str]
+
+
+@dataclass
 class ModelBrief:
     summaries: Dict[str, str]
     analyses: Dict[str, str]
     portfolio_actions: List[PortfolioAction]
+    market_summaries: List[MarketSummary] = field(default_factory=list)
 
 
 def _normalized_numbers(value: str) -> set[str]:
@@ -521,6 +529,43 @@ def parse_model_summaries(
     return summaries
 
 
+def _parse_market_summary_entries(value: Any, pack: EvidencePack) -> List[MarketSummary]:
+    if not isinstance(value, list):
+        raise ValueError("Model output must contain a market_summaries list.")
+    allowed_ids = {item.id for item in pack.items}
+    summaries: List[MarketSummary] = []
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            raise ValueError("Every market summary entry must be an object.")
+        if set(entry.keys()) != {"topic", "summary", "evidence_ids"}:
+            raise ValueError(
+                "Every market summary must contain only topic, summary, and evidence_ids."
+            )
+        topic = re.sub(r"\s+", " ", str(entry.get("topic", ""))).strip()
+        summary = _normalize_collection_gap_language(
+            re.sub(r"\s+", " ", str(entry.get("summary", ""))).strip()
+        )
+        raw_evidence_ids = entry.get("evidence_ids")
+        if not isinstance(raw_evidence_ids, list):
+            raise ValueError("Every market summary must contain evidence_ids.")
+        evidence_ids = [str(value).strip() for value in raw_evidence_ids]
+        if not topic or len(topic) > 80:
+            raise ValueError("Market summary topic must be 1-80 characters.")
+        if not summary or len(summary) > 1000:
+            raise ValueError("Market summary must be 1-1000 characters.")
+        if URL_RE.search(f"{topic} {summary}"):
+            raise ValueError("Market summary contains a URL.")
+        unknown_ids = sorted(set(evidence_ids) - allowed_ids)
+        if unknown_ids:
+            raise ValueError(
+                f"Market summary cites unknown evidence IDs: {', '.join(unknown_ids)}"
+            )
+        if not evidence_ids:
+            raise ValueError("Market summary must cite at least one evidence ID.")
+        summaries.append(MarketSummary(topic=topic, summary=summary, evidence_ids=evidence_ids))
+    return summaries
+
+
 def parse_model_brief(
     text: str,
     pack: EvidencePack,
@@ -529,15 +574,22 @@ def parse_model_brief(
     warnings: List[str] | None = None,
 ) -> ModelBrief:
     payload = _extract_model_payload(text)
-    if set(payload.keys()) != {"summaries", "portfolio_actions"}:
-        raise ValueError("Model output must contain only summaries and portfolio_actions.")
-
-    summaries, analyses = _parse_summary_entries(
-        payload.get("summaries"),
-        pack,
-        require_analysis=True,
-        warnings=warnings,
-    )
+    if set(payload.keys()) == {"summaries", "portfolio_actions"}:
+        summaries, analyses = _parse_summary_entries(
+            payload.get("summaries"),
+            pack,
+            require_analysis=True,
+            warnings=warnings,
+        )
+        market_summaries: List[MarketSummary] = []
+    elif set(payload.keys()) == {"market_summaries", "portfolio_actions"}:
+        summaries = {}
+        analyses = {}
+        market_summaries = _parse_market_summary_entries(payload.get("market_summaries"), pack)
+    else:
+        raise ValueError(
+            "Model output must contain only market_summaries and portfolio_actions."
+        )
     action_entries = payload.get("portfolio_actions")
     if not isinstance(action_entries, list):
         raise ValueError("Model output must contain a portfolio_actions list.")
@@ -646,7 +698,12 @@ def parse_model_brief(
     missing_tickers = sorted(expected_tickers - seen_tickers)
     if missing_tickers:
         raise ValueError(f"Model omitted holding tickers: {', '.join(missing_tickers)}")
-    return ModelBrief(summaries=summaries, analyses=analyses, portfolio_actions=actions)
+    return ModelBrief(
+        summaries=summaries,
+        analyses=analyses,
+        portfolio_actions=actions,
+        market_summaries=market_summaries,
+    )
 
 
 def _item_matches_holdings(item: EvidenceItem, holding_tickers: set[str]) -> bool:
@@ -837,6 +894,7 @@ def model_summary_brief_markdown(
     holdings: Sequence[Mapping[str, Any]] = (),
     focus_topics: Sequence[Mapping[str, Any]] = (),
     portfolio_actions: Sequence[PortfolioAction] = (),
+    market_summaries: Sequence[MarketSummary] = (),
     market: str | None = None,
 ) -> str:
     summary_items = [item for item in pack.items if item.evidence_level == "summary"]
@@ -878,71 +936,100 @@ def model_summary_brief_markdown(
         "## 1. 市场概览",
         "",
     ]
-    if market in {None, "a_share"}:
-        _append_information_group(
+    items_by_id = {item.id: item for item in pack.items}
+    if market_summaries:
+        for summary in market_summaries:
+            evidence_links = ", ".join(
+                f"[{evidence_id}]({evidence_display_url(items_by_id[evidence_id])})"
+                for evidence_id in summary.evidence_ids
+                if evidence_id in items_by_id
+            )
+            parts.extend(
+                [
+                    f"### {summary.topic}",
+                    "",
+                    f"- {summary.summary}",
+                    f"- **证据：** {evidence_links or '无'}",
+                    "",
+                ]
+            )
+        parts.extend(
+            [
+                "## 2. 重点主题雷达",
+                "",
+                "- 已在上方市场概览中按主题聚合；逐条证据请查看来源日志。",
+                "",
+                "## 3. 持仓简报",
+                "",
+                "- 已在下方操作评估中按持仓聚合；逐条证据请查看来源日志。",
+                "",
+            ]
+        )
+    else:
+        if market in {None, "a_share"}:
+            _append_information_group(
+                parts,
+                heading="A股市场概览",
+                items=a_share_market_items,
+                summaries=summaries,
+                analyses=analyses,
+                timezone_name=pack.timezone,
+                empty_message="本窗口内，已启用信源未采集到A股市场概览条目；这不代表市场没有发生事件。",
+            )
+        if market in {None, "us_equities"}:
+            _append_information_group(
+                parts,
+                heading="美股市场概览与宏观驱动",
+                items=us_market_items,
+                summaries=summaries,
+                analyses=analyses,
+                timezone_name=pack.timezone,
+                empty_message="本窗口内，已启用信源未采集到美股整体或宏观驱动条目；这不代表市场没有发生事件。",
+            )
+
+        _append_focus_topic_radar(
             parts,
-            heading="A股市场概览",
-            items=a_share_market_items,
+            focus_topics=focus_topics,
+            items=pack.items,
             summaries=summaries,
             analyses=analyses,
             timezone_name=pack.timezone,
-            empty_message="本窗口内，已启用信源未采集到A股市场概览条目；这不代表市场没有发生事件。",
-        )
-    if market in {None, "us_equities"}:
-        _append_information_group(
-            parts,
-            heading="美股市场概览与宏观驱动",
-            items=us_market_items,
-            summaries=summaries,
-            analyses=analyses,
-            timezone_name=pack.timezone,
-            empty_message="本窗口内，已启用信源未采集到美股整体或宏观驱动条目；这不代表市场没有发生事件。",
         )
 
-    _append_focus_topic_radar(
-        parts,
-        focus_topics=focus_topics,
-        items=pack.items,
-        summaries=summaries,
-        analyses=analyses,
-        timezone_name=pack.timezone,
-    )
-
-    parts.extend(["", "## 3. 持仓简报", ""])
-    if not holdings:
-        parts.append(
-            "- 尚未配置持仓。请在 `config/sources.json` 的 `portfolios` 中维护基金或个股。"
-        )
-    market_labels = [("a_share", "A股持仓"), ("us_equities", "美股持仓")]
-    for market, label in market_labels:
-        market_holdings = [holding for holding in holdings if str(holding.get("market", "us_equities")) == market]
-        if not market_holdings:
-            continue
-        parts.extend([f"### {label}", ""])
-        for holding in market_holdings:
-            ticker = str(holding.get("ticker", "")).upper().strip()
-            company = str(holding.get("company", ticker)).strip() or ticker
-            related = [item for item in pack.items if ticker in {value.upper() for value in item.matched_tickers}]
-            parts.extend([f"#### {ticker} · {company}", ""])
-            if not related:
-                parts.append(
-                    "- 本窗口内，配置的可靠信源未采集到该持仓的相关条目；"
-                    "这不代表该持仓没有发生事件。"
-                )
-                parts.append("")
+        parts.extend(["", "## 3. 持仓简报", ""])
+        if not holdings:
+            parts.append(
+                "- 尚未配置持仓。请在 `config/sources.json` 的 `portfolios` 中维护基金或个股。"
+            )
+        market_labels = [("a_share", "A股持仓"), ("us_equities", "美股持仓")]
+        for market, label in market_labels:
+            market_holdings = [holding for holding in holdings if str(holding.get("market", "us_equities")) == market]
+            if not market_holdings:
                 continue
-            for item in related:
-                _append_information_item(
-                    parts,
-                    item,
-                    summaries,
-                    analyses,
-                    heading_level=5,
-                    timezone_name=pack.timezone,
-                )
+            parts.extend([f"### {label}", ""])
+            for holding in market_holdings:
+                ticker = str(holding.get("ticker", "")).upper().strip()
+                company = str(holding.get("company", ticker)).strip() or ticker
+                related = [item for item in pack.items if ticker in {value.upper() for value in item.matched_tickers}]
+                parts.extend([f"#### {ticker} · {company}", ""])
+                if not related:
+                    parts.append(
+                        "- 本窗口内，配置的可靠信源未采集到该持仓的相关条目；"
+                        "这不代表该持仓没有发生事件。"
+                    )
+                    parts.append("")
+                    continue
+                for item in related:
+                    _append_information_item(
+                        parts,
+                        item,
+                        summaries,
+                        analyses,
+                        heading_level=5,
+                        timezone_name=pack.timezone,
+                    )
 
     actions_by_ticker = {action.ticker: action for action in portfolio_actions}
-    items_by_id = {item.id: item for item in pack.items}
     parts.extend(
         [
             "",

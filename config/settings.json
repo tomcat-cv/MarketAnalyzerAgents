@@ -21,11 +21,11 @@
   "markets": {
     "a_share": {
       "holidays": [],
-      "poll_interval_seconds": 60
+      "poll_interval_seconds": 1800
     },
     "us_equities": {
       "holidays": [],
-      "poll_interval_seconds": 60
+      "poll_interval_seconds": 1800
     }
   },
   "market_data": {
@@ -51,6 +51,9 @@
     "max_retries": 2,
     "retry_backoff_seconds": 1.0,
     "max_evidence_items": 200
+  },
+  "news_collection": {
+    "interval_seconds": 900
   },
   "service": {
     "health_path": "state/service-health.json",

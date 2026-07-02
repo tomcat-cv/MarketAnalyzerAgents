@@ -55,6 +55,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "retry_backoff_seconds": 1.0,
         "max_evidence_items": 200,
     },
+    "news_collection": {
+        "interval_seconds": 900,
+    },
     "service": {
         "health_path": "state/service-health.json",
         "max_backoff_seconds": 300,

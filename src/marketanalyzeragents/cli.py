@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import time as time_module
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -179,6 +179,7 @@ def write_model_brief(
         holdings=holdings,
         focus_topics=focus_topics,
         portfolio_actions=model_brief.portfolio_actions,
+        market_summaries=model_brief.market_summaries,
         market=market,
     )
     write_text(runs_dir / f"{stamp}-brief-source.md", brief_text)
@@ -246,6 +247,11 @@ def command_run(args: argparse.Namespace) -> int:
         pack.errors.append("Dry run does not access external evidence sources.")
     else:
         pack = collect_evidence(settings=settings, sources=inputs.get("sources", {}))
+        store, _ = _store_and_outbox(root, settings)
+        try:
+            store.save_evidence_pack(pack.to_dict())
+        finally:
+            store.close()
         write_json(runs_dir / f"{stamp}-evidence.json", pack.to_dict())
         write_text(runs_dir / f"{stamp}-evidence.md", evidence_pack_markdown(pack))
         if not pack.items:
@@ -371,11 +377,17 @@ def command_collect(args: argparse.Namespace) -> int:
     settings = load_settings(root)
     inputs = read_inputs(root, settings)
     pack = collect_evidence(settings=settings, sources=inputs.get("sources", {}))
+    store, _ = _store_and_outbox(root, settings)
+    try:
+        store.save_evidence_pack(pack.to_dict())
+    finally:
+        store.close()
     output_path = Path(args.output).expanduser() if args.output else root / "runs" / f"{run_stamp()}-evidence.json"
     if not output_path.is_absolute():
         output_path = root / output_path
     write_json(output_path, pack.to_dict())
     print(f"Evidence written: {output_path}")
+    print("Evidence stored in SQLite.")
     print(f"Verified items: {len(pack.items)}")
     print(f"Collection warnings: {len(pack.errors)}")
     print(f"Collector coverage entries: {len(pack.coverage)}")
@@ -415,6 +427,34 @@ def _store_and_outbox(root: Path, settings: dict[str, Any]) -> tuple[PortfolioSt
     store = PortfolioStore(resolve_path(root, state.get("database_path", "state/portfolio.db")))
     outbox = build_outbox(root, settings)
     return store, outbox
+
+
+def _collect_and_store_evidence(root: Path, settings: dict[str, Any]) -> EvidencePack:
+    inputs = read_inputs(root, settings)
+    pack = collect_evidence(settings=settings, sources=inputs.get("sources", {}))
+    store, _ = _store_and_outbox(root, settings)
+    try:
+        store.save_evidence_pack(pack.to_dict())
+    finally:
+        store.close()
+    return pack
+
+
+def _stored_evidence_by_ticker(
+    store: PortfolioStore,
+    holdings: Sequence[dict[str, Any]],
+    *,
+    max_items_per_symbol: int,
+    lookback_hours: int,
+) -> dict[str, list[dict[str, Any]]]:
+    tickers = [str(holding.get("ticker", "")).upper().strip() for holding in holdings]
+    since = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    grouped = store.recent_summary_evidence_for_tickers(tickers, since=since)
+    return {
+        ticker: items[:max_items_per_symbol]
+        for ticker, items in grouped.items()
+        if items
+    }
 
 
 def command_market_status(args: argparse.Namespace) -> int:
@@ -477,14 +517,20 @@ def command_intraday(args: argparse.Namespace) -> int:
         if status.state != "open" and not args.force:
             print(f"{args.market} is {status.state}; no intraday polling performed.")
             return 0
-        evidence_by_ticker: dict[str, list[dict[str, Any]]] = {}
+        evidence_by_ticker = _stored_evidence_by_ticker(
+            store,
+            holdings,
+            max_items_per_symbol=max_agent_evidence,
+            lookback_hours=int(settings.get("lookback_hours", 24)),
+        )
         if args.with_news:
             pack = collect_evidence(settings=settings, sources=inputs.get("sources", {}))
+            store.save_evidence_pack(pack.to_dict())
             for item in pack.items:
                 if item.evidence_level != "summary":
                     continue
                 for ticker in item.matched_tickers:
-                    evidence_by_ticker.setdefault(ticker.upper(), []).append(item.__dict__)
+                    evidence_by_ticker.setdefault(ticker.upper(), []).insert(0, item.__dict__)
         failures = []
         for holding in holdings:
             try:
@@ -523,6 +569,7 @@ def command_intraday(args: argparse.Namespace) -> int:
                     **debate.suggestion,
                     "price_change_pct": suggestion.get("price_change_pct"),
                     "signal": suggestion.get("signal"),
+                    "decision_source": "agent_debate",
                 }
                 turns = debate.turns
             if not should_emit_suggestion(
@@ -712,8 +759,12 @@ def command_service(args: argparse.Namespace) -> int:
     inputs = read_inputs(root, settings)
     intraday_markets = _configured_intraday_markets(inputs, args.markets)
     brief_markets = [] if args.no_briefs else (args.markets or _configured_brief_markets(settings))
-    if not intraday_markets and not brief_markets:
-        print("No configured markets. Add holdings, pass --markets, or configure market schedules.", file=sys.stderr)
+    if not intraday_markets and not brief_markets and args.no_news_watch:
+        print(
+            "No configured markets and news watch is disabled. Add holdings, pass --markets, "
+            "configure market schedules, or enable news watch.",
+            file=sys.stderr,
+        )
         return 2
 
     next_brief_targets: dict[str, datetime] = {}
@@ -721,10 +772,15 @@ def command_service(args: argparse.Namespace) -> int:
     next_intraday_allowed: dict[str, float] = {}
     failure_backoff: dict[str, float] = {}
     market_health: dict[str, dict[str, Any]] = {market: {"state": "starting"} for market in intraday_markets}
+    news_health: dict[str, Any] = {"state": "starting"}
+    last_news_collect = 0.0
+    next_news_allowed = 0.0
+    news_failure_backoff = 0.0
     last_retention_day = None
     print(
         "Service started. "
         f"Brief schedule enabled={not args.no_briefs}; "
+        f"news watch enabled={not args.no_news_watch}; "
         f"brief markets={', '.join(brief_markets) if brief_markets else 'none'}; "
         f"intraday markets={', '.join(intraday_markets) if intraday_markets else 'none'}.",
         flush=True,
@@ -764,6 +820,42 @@ def command_service(args: argparse.Namespace) -> int:
                             f"Next scheduled brief for {market}: {next_brief_targets[market].isoformat(timespec='seconds')}",
                             flush=True,
                         )
+
+            if not args.no_news_watch:
+                news_settings = settings.get("news_collection", {})
+                interval = int(args.news_interval or news_settings.get("interval_seconds", 900))
+                now_monotonic = time_module.monotonic()
+                if now_monotonic >= next_news_allowed and now_monotonic - last_news_collect >= interval:
+                    try:
+                        pack = _collect_and_store_evidence(root, settings)
+                        last_news_collect = now_monotonic
+                        next_news_allowed = 0.0
+                        news_failure_backoff = 0.0
+                        news_health = {
+                            "state": "collect_ok",
+                            "items": len(pack.items),
+                            "errors": len(pack.errors),
+                            "retrieved_at": pack.retrieved_at,
+                            "as_of_beijing": now.isoformat(),
+                        }
+                        print(
+                            f"News collection stored {len(pack.items)} items; warnings={len(pack.errors)}.",
+                            flush=True,
+                        )
+                    except Exception as exc:
+                        previous_backoff = news_failure_backoff or float(args.tick_seconds)
+                        news_failure_backoff = min(
+                            float(service_settings.get("max_backoff_seconds", 300)),
+                            max(float(args.tick_seconds), previous_backoff * 2),
+                        )
+                        next_news_allowed = time_module.monotonic() + news_failure_backoff
+                        news_health = {
+                            "state": "collect_failed",
+                            "error": str(exc),
+                            "backoff_seconds": news_failure_backoff,
+                            "as_of_beijing": now.isoformat(),
+                        }
+                        print(f"News collection failed: {exc}", file=sys.stderr)
 
             for market in intraday_markets:
                 market_settings = load_market_settings(root, settings, market).get("markets", {}).get(market, {})
@@ -831,9 +923,11 @@ def command_service(args: argparse.Namespace) -> int:
                     "status": "running",
                     "updated_at": local_now(str(settings.get("timezone", "Asia/Shanghai"))).isoformat(),
                     "brief_schedule_enabled": not args.no_briefs,
+                    "news_watch_enabled": not args.no_news_watch,
                     "next_brief_targets": {
                         market: target.isoformat() for market, target in next_brief_targets.items()
                     },
+                    "news": news_health,
                     "markets": market_health,
                 },
             )
@@ -950,7 +1044,17 @@ def build_parser() -> argparse.ArgumentParser:
     service_parser.add_argument(
         "--with-news",
         action="store_true",
-        help="Collect verified news before each intraday advice cycle.",
+        help="Also collect verified news immediately before each intraday advice cycle.",
+    )
+    service_parser.add_argument(
+        "--no-news-watch",
+        action="store_true",
+        help="Disable the independent 24-hour evidence collection loop.",
+    )
+    service_parser.add_argument(
+        "--news-interval",
+        type=int,
+        help="Override the independent evidence collection interval in seconds.",
     )
     service_parser.add_argument(
         "--advice-backend",

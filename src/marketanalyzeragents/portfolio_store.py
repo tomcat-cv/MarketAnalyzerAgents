@@ -5,7 +5,7 @@ import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,22 @@ class PortfolioStore:
               round_number INTEGER NOT NULL, content TEXT NOT NULL,
               FOREIGN KEY (suggestion_id) REFERENCES suggestions(id)
             );
+            CREATE TABLE IF NOT EXISTS evidence_packs (
+              retrieved_at TEXT PRIMARY KEY, window_start TEXT NOT NULL,
+              window_end TEXT NOT NULL, window_mode TEXT NOT NULL,
+              timezone TEXT NOT NULL, lookback_hours INTEGER NOT NULL,
+              payload_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS evidence_items (
+              retrieved_at TEXT NOT NULL, evidence_id TEXT NOT NULL,
+              title TEXT NOT NULL, published_at TEXT NOT NULL,
+              source_name TEXT NOT NULL, source_type TEXT NOT NULL,
+              url TEXT NOT NULL, display_url TEXT NOT NULL,
+              content TEXT NOT NULL, evidence_level TEXT NOT NULL,
+              matched_topics_json TEXT NOT NULL, matched_tickers_json TEXT NOT NULL,
+              PRIMARY KEY (retrieved_at, evidence_id),
+              FOREIGN KEY (retrieved_at) REFERENCES evidence_packs(retrieved_at) ON DELETE CASCADE
+            );
             CREATE INDEX IF NOT EXISTS idx_quotes_recent
               ON quotes (market, symbol, observed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_price_bars_recent
@@ -82,6 +98,8 @@ class PortfolioStore:
               ON operations (market, operated_at);
             CREATE INDEX IF NOT EXISTS idx_agent_discussions_suggestion
               ON agent_discussions (suggestion_id, turn_index);
+            CREATE INDEX IF NOT EXISTS idx_evidence_items_recent
+              ON evidence_items (evidence_level, published_at DESC);
             """
         )
         self.connection.commit()
@@ -169,6 +187,102 @@ class PortfolioStore:
         )
         self.connection.commit()
 
+    def save_evidence_pack(self, pack: Mapping[str, Any]) -> None:
+        retrieved_at = str(pack.get("retrieved_at", ""))
+        if not retrieved_at:
+            raise ValueError("Evidence pack must include retrieved_at.")
+        self.connection.execute(
+            """INSERT OR REPLACE INTO evidence_packs
+               (retrieved_at,window_start,window_end,window_mode,timezone,lookback_hours,payload_json)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                retrieved_at,
+                str(pack.get("window_start", "")),
+                str(pack.get("window_end", "")),
+                str(pack.get("window_mode", "")),
+                str(pack.get("timezone", "")),
+                int(pack.get("lookback_hours", 0)),
+                json.dumps(pack, ensure_ascii=False),
+            ),
+        )
+        self.connection.execute("DELETE FROM evidence_items WHERE retrieved_at=?", (retrieved_at,))
+        rows = []
+        for item in pack.get("items", []):
+            if not isinstance(item, Mapping):
+                continue
+            rows.append(
+                (
+                    retrieved_at,
+                    str(item.get("id", "")),
+                    str(item.get("title", "")),
+                    str(item.get("published_at", "")),
+                    str(item.get("source_name", "")),
+                    str(item.get("source_type", "")),
+                    str(item.get("url", "")),
+                    str(item.get("display_url", "")),
+                    str(item.get("content", "")),
+                    str(item.get("evidence_level", "")),
+                    json.dumps(item.get("matched_topics", []), ensure_ascii=False),
+                    json.dumps(item.get("matched_tickers", []), ensure_ascii=False),
+                )
+            )
+        self.connection.executemany(
+            """INSERT OR REPLACE INTO evidence_items
+               (retrieved_at,evidence_id,title,published_at,source_name,source_type,url,display_url,
+                content,evidence_level,matched_topics_json,matched_tickers_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+        self.connection.commit()
+
+    def recent_summary_evidence_for_tickers(
+        self,
+        tickers: Sequence[str],
+        *,
+        since: datetime | None = None,
+        limit: int = 200,
+    ) -> dict[str, list[dict[str, Any]]]:
+        wanted = {ticker.upper().strip() for ticker in tickers if ticker.strip()}
+        if not wanted:
+            return {}
+        rows = self.connection.execute(
+            """SELECT * FROM evidence_items WHERE evidence_level='summary'
+               ORDER BY published_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {ticker: [] for ticker in wanted}
+        for row in rows:
+            try:
+                published_at = datetime.fromisoformat(str(row["published_at"]).replace("Z", "+00:00"))
+            except ValueError:
+                published_at = None
+            if since is not None and published_at is not None and published_at < since:
+                continue
+            try:
+                matched_tickers = json.loads(row["matched_tickers_json"])
+            except json.JSONDecodeError:
+                matched_tickers = []
+            try:
+                matched_topics = json.loads(row["matched_topics_json"])
+            except json.JSONDecodeError:
+                matched_topics = []
+            item = {
+                "id": row["evidence_id"],
+                "title": row["title"],
+                "published_at": row["published_at"],
+                "source_name": row["source_name"],
+                "source_type": row["source_type"],
+                "url": row["url"],
+                "display_url": row["display_url"],
+                "content": row["content"],
+                "evidence_level": row["evidence_level"],
+                "matched_topics": matched_topics,
+                "matched_tickers": matched_tickers,
+            }
+            for ticker in {str(value).upper().strip() for value in matched_tickers} & wanted:
+                grouped.setdefault(ticker, []).append(item)
+        return grouped
+
     def discussion_for_suggestion(self, suggestion_id: int) -> list[sqlite3.Row]:
         return self.connection.execute(
             """SELECT * FROM agent_discussions WHERE suggestion_id=?
@@ -178,7 +292,7 @@ class PortfolioStore:
 
     def prune_market_data(self, retention_days: int, now: datetime | None = None) -> dict[str, int]:
         if retention_days <= 0:
-            return {"quotes": 0, "price_bars": 0}
+            return {"quotes": 0, "price_bars": 0, "evidence_packs": 0}
         cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days)
         cutoff_text = cutoff.isoformat()
         quote_cursor = self.connection.execute(
@@ -189,10 +303,19 @@ class PortfolioStore:
             "DELETE FROM price_bars WHERE observed_at < ?",
             (cutoff_text,),
         )
+        self.connection.execute(
+            "DELETE FROM evidence_items WHERE retrieved_at < ?",
+            (cutoff_text,),
+        )
+        evidence_cursor = self.connection.execute(
+            "DELETE FROM evidence_packs WHERE retrieved_at < ?",
+            (cutoff_text,),
+        )
         self.connection.commit()
         return {
             "quotes": int(quote_cursor.rowcount if quote_cursor.rowcount is not None else 0),
             "price_bars": int(bar_cursor.rowcount if bar_cursor.rowcount is not None else 0),
+            "evidence_packs": int(evidence_cursor.rowcount if evidence_cursor.rowcount is not None else 0),
         }
 
     def operations_for_date(self, market: str, day: str) -> list[sqlite3.Row]:

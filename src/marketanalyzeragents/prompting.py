@@ -38,16 +38,13 @@ def build_openai_messages(
     system = f"""You are a strict evidence-grounded market research analyst.
 
 Work in {settings.get("language", "zh-CN")} and perform exactly three tasks:
-1. Compress each supplied evidence item into a factual summary.
-2. Add one reader-friendly analysis note for each supplied evidence item.
-3. Give one conservative action assessment for every configured holding.
+1. Read all supplied evidence as one packet and produce a small set of aggregated market summaries.
+2. Give one conservative action assessment for every configured holding.
+3. Cite the evidence IDs that directly support each summary and action.
 
-For summaries, use only facts explicitly present in that item's Evidence field, title,
-and verified Published timestamp.
-For per-item analysis, explain what the item means for a reader, what matters, and what
-is still uncertain. If the evidence is an SEC Form 4, explicitly explain the reporting
-person, transaction direction, share count, price, and post-transaction ownership when
-those fields are present in the evidence.
+For market summaries, synthesize across related evidence instead of analyzing every item one by one.
+Do not create a separate summary merely because an item exists. Keep only themes that matter for
+market context, portfolio risk, or configured focus topics.
 For portfolio actions, you may synthesize and infer from all supplied summary-level evidence,
 including broad-market, macro, policy-risk, sector/theme, and company-specific evidence. Company
 news is not required when market or policy evidence directly affects a holding's configured themes,
@@ -64,11 +61,11 @@ Return JSON only. Do not return Markdown, URLs, citations, commentary, or extra 
 
 Return exactly this JSON shape:
 {{
-  "summaries": [
+  "market_summaries": [
     {{
-      "evidence_id": "EVID-001",
-      "summary": "One or two concise sentences that directly paraphrase only this evidence.",
-      "analysis": "One reader-friendly interpretation of why this item matters, and what remains uncertain."
+      "topic": "Market, policy, sector, or portfolio-relevant theme",
+      "summary": "A concise synthesis across related supplied evidence.",
+      "evidence_ids": ["EVID-001"]
     }}
   ],
   "portfolio_actions": [
@@ -84,13 +81,12 @@ Return exactly this JSON shape:
 }}
 
 Requirements:
-- Return exactly one entry for every evidence item, using its exact evidence ID.
-- Keep each summary under 800 characters.
-- Keep each analysis under 1000 characters.
-- Summary entries must not add facts, implications, market interpretation, background, or next steps
-  beyond the supplied title, Evidence field, and verified Published timestamp.
-- Analysis entries may explain implications and caveats. If comparing with another supplied
-  evidence item, name its evidence ID. Do not invent missing table fields or unstated causes.
+- Return at most 6 market_summaries. Fewer is better when the evidence packet is thin.
+- Market summaries must aggregate related evidence; do not produce one entry per evidence item.
+- Keep each market summary under 1000 characters.
+- Every market summary must cite at least one supplied evidence ID.
+- Omit low-value price-only routine movement from market_summaries unless it is necessary context
+  for a cited portfolio action.
 - Do not calculate new averages, ratios, percentage changes, ownership reduction percentages,
   or unit conversions unless that exact number already appears in the supplied evidence.
   Use qualitative wording instead, such as "规模较大" or "接近窗口高点".

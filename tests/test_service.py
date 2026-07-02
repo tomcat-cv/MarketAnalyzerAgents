@@ -7,6 +7,7 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from marketanalyzeragents.cli import (
@@ -18,6 +19,7 @@ from marketanalyzeragents.cli import (
     build_parser,
     command_intraday,
 )
+from marketanalyzeragents.evidence import EvidenceItem, EvidencePack
 from marketanalyzeragents.intraday import FeishuWebhookConversationPort, MarketData, format_conversation_message
 from marketanalyzeragents.portfolio_store import PriceBar, Quote
 
@@ -187,6 +189,8 @@ class ServiceCommandTests(unittest.TestCase):
         self.assertEqual(args.command, "service")
         self.assertEqual(args.markets, ["us_equities"])
         self.assertTrue(args.with_news)
+        self.assertFalse(args.no_news_watch)
+        self.assertIsNone(args.news_interval)
         self.assertEqual(args.advice_backend, "conservative")
         self.assertEqual(args.interval, 60)
         self.assertTrue(args.emit_low_signal)
@@ -227,7 +231,7 @@ class ServiceCommandTests(unittest.TestCase):
                 interval=None,
                 force=True,
                 with_news=False,
-                advice_backend="conservative",
+                advice_backend="openai",
                 debate_rounds=None,
                 emit_low_signal=False,
             )
@@ -258,6 +262,21 @@ class ServiceCommandTests(unittest.TestCase):
                 with patch(
                     "marketanalyzeragents.cli.fetch_yahoo_market_data",
                     side_effect=fake_fetch,
+                ), patch(
+                    "marketanalyzeragents.cli.run_agent_debate",
+                    return_value=argparse.Namespace(
+                        suggestion={
+                            "market": "us_equities",
+                            "symbol": "NVDA",
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "action": "观察",
+                            "confidence": "中",
+                            "rationale": "stored evidence reached the advisor agents",
+                            "evidence_ids": ["EVID-001"],
+                            "invalidation": "new evidence",
+                        },
+                        turns=[],
+                    ),
                 ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     exit_code = command_intraday(args)
             finally:
@@ -268,6 +287,119 @@ class ServiceCommandTests(unittest.TestCase):
             self.assertEqual(con.execute("select count(*) from quotes").fetchone()[0], 1)
             self.assertEqual(con.execute("select count(*) from suggestions").fetchone()[0], 0)
             self.assertFalse((root / "state" / "outbox.jsonl").exists())
+
+    def test_intraday_uses_stored_evidence_without_immediate_news_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "state").mkdir()
+            (root / "config" / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "lookback_hours": 24,
+                        "state": {
+                            "database_path": "state/portfolio.db",
+                            "conversation_outbox": "state/outbox.jsonl",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "config" / "sources.json").write_text(
+                json.dumps(
+                    {
+                        "portfolios": {
+                            "us_equities": {
+                                "holdings": [
+                                    {"ticker": "NVDA", "symbol": "NVDA", "company": "NVIDIA"}
+                                ]
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            con = sqlite3.connect(root / "state" / "portfolio.db")
+            con.close()
+            from marketanalyzeragents.portfolio_store import PortfolioStore
+
+            store = PortfolioStore(root / "state" / "portfolio.db")
+            store.save_evidence_pack(
+                {
+                    "retrieved_at": "2026-06-23T17:58:00+00:00",
+                    "lookback_hours": 24,
+                    "window_start": "",
+                    "window_end": "",
+                    "window_mode": "rolling_hours",
+                    "timezone": "Asia/Shanghai",
+                    "items": [
+                        {
+                            "id": "EVID-001",
+                            "title": "NVIDIA verified update",
+                            "published_at": datetime.now(timezone.utc).isoformat(),
+                            "source_name": "Official",
+                            "source_type": "primary",
+                            "url": "https://example.test/nvda",
+                            "display_url": "",
+                            "content": "verified update",
+                            "matched_topics": [],
+                            "matched_tickers": ["NVDA"],
+                            "evidence_level": "summary",
+                        }
+                    ],
+                    "errors": [],
+                    "coverage": [],
+                }
+            )
+            store.close()
+            args = argparse.Namespace(
+                market="us_equities",
+                watch=False,
+                interval=None,
+                force=True,
+                with_news=False,
+                advice_backend="openai",
+                debate_rounds=None,
+                emit_low_signal=False,
+            )
+
+            def fake_fetch(client, market, symbol, *, history_range, history_interval):
+                return MarketData(
+                    quote=Quote("us_equities", "NVDA", datetime.now(timezone.utc).isoformat(), 103, 100),
+                    history=(),
+                    metrics={},
+                )
+
+            previous_cwd = Path.cwd()
+            os.chdir(root)
+            try:
+                with patch(
+                    "marketanalyzeragents.cli.fetch_yahoo_market_data",
+                    side_effect=fake_fetch,
+                ), patch(
+                    "marketanalyzeragents.cli.run_agent_debate",
+                    return_value=argparse.Namespace(
+                        suggestion={
+                            "market": "us_equities",
+                            "symbol": "NVDA",
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "action": "观察",
+                            "confidence": "中",
+                            "rationale": "stored evidence reached the advisor agents",
+                            "evidence_ids": ["EVID-001"],
+                            "invalidation": "new evidence",
+                        },
+                        turns=[],
+                    ),
+                ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    exit_code = command_intraday(args)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(exit_code, 0)
+            con = sqlite3.connect(root / "state" / "portfolio.db")
+            row = con.execute("select evidence_json from suggestions").fetchone()
+            self.assertEqual(json.loads(row[0]), ["EVID-001"])
 
     def test_intraday_uses_configured_advice_backend_when_cli_omits_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -305,7 +437,7 @@ class ServiceCommandTests(unittest.TestCase):
                 watch=False,
                 interval=None,
                 force=True,
-                with_news=False,
+                with_news=True,
                 advice_backend=None,
                 debate_rounds=None,
                 emit_low_signal=False,
@@ -340,11 +472,28 @@ class ServiceCommandTests(unittest.TestCase):
                         "action": "观察",
                         "confidence": "中",
                         "rationale": "configured backend was used",
-                        "evidence_ids": [],
+                        "evidence_ids": ["E1"],
                         "invalidation": "test",
                     },
                     turns=[],
                 )
+
+            evidence = EvidencePack(
+                "2026-06-23T17:57:04+00:00",
+                24,
+                items=[
+                    EvidenceItem(
+                        "E1",
+                        "Marvell verified update",
+                        "2026-06-23T17:40:00+00:00",
+                        "Official",
+                        "company",
+                        "https://example.test/mrvl",
+                        "verified update",
+                        matched_tickers=["MRVL"],
+                    )
+                ],
+            )
 
             previous_cwd = Path.cwd()
             os.chdir(root)
@@ -352,6 +501,9 @@ class ServiceCommandTests(unittest.TestCase):
                 with patch(
                     "marketanalyzeragents.cli.fetch_yahoo_market_data",
                     side_effect=fake_fetch,
+                ), patch(
+                    "marketanalyzeragents.cli.collect_evidence",
+                    return_value=evidence,
                 ), patch(
                     "marketanalyzeragents.cli.run_agent_debate",
                     side_effect=fake_debate,
@@ -399,7 +551,7 @@ class ServiceCommandTests(unittest.TestCase):
                 watch=False,
                 interval=None,
                 force=True,
-                with_news=False,
+                with_news=True,
                 advice_backend="conservative",
                 debate_rounds=None,
                 emit_low_signal=False,
@@ -427,12 +579,32 @@ class ServiceCommandTests(unittest.TestCase):
                     metrics={},
                 )
 
+            evidence = EvidencePack(
+                "2026-06-22T21:31:00+08:00",
+                24,
+                items=[
+                    EvidenceItem(
+                        "E1",
+                        "NVIDIA verified update",
+                        "2026-06-22T21:00:00+08:00",
+                        "Official",
+                        "company",
+                        "https://example.test/nvda",
+                        "verified update",
+                        matched_tickers=["NVDA"],
+                    )
+                ],
+            )
+
             previous_cwd = Path.cwd()
             os.chdir(root)
             try:
                 with patch(
                     "marketanalyzeragents.cli.fetch_yahoo_market_data",
                     side_effect=fake_fetch,
+                ), patch(
+                    "marketanalyzeragents.cli.collect_evidence",
+                    return_value=evidence,
                 ), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     exit_code = command_intraday(args)
             finally:
@@ -440,16 +612,13 @@ class ServiceCommandTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             con = sqlite3.connect(root / "state" / "portfolio.db")
-            self.assertEqual(con.execute("select count(*) from suggestions").fetchone()[0], 1)
+            self.assertEqual(con.execute("select count(*) from quotes").fetchone()[0], 1)
+            self.assertEqual(con.execute("select count(*) from suggestions").fetchone()[0], 0)
             self.assertEqual(
-                con.execute("select symbol from suggestions").fetchone()[0],
+                con.execute("select symbol from quotes").fetchone()[0],
                 "NVDA",
             )
-            rows = [
-                json.loads(line)
-                for line in (root / "state" / "outbox.jsonl").read_text(encoding="utf-8").splitlines()
-            ]
-            self.assertEqual(rows[0]["symbol"], "NVDA")
+            self.assertFalse((root / "state" / "outbox.jsonl").exists())
 
 
 if __name__ == "__main__":

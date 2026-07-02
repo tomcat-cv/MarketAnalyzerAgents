@@ -10,14 +10,26 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
+from .collectors import HttpClient
 from .config import find_project_root, load_json, load_market_settings, load_settings, resolve_path
 from .evidence import configured_focus_topics, configured_portfolio_holdings
+from .intraday import fetch_yahoo_market_data
 from .market_calendar import market_status
+from .portfolio_store import PortfolioStore
 from .writer import markdown_to_html, write_json
 
 
 MARKETS = ("a_share", "us_equities")
+
+
+def _display_timezone(settings: Mapping[str, Any]) -> str:
+    return str(settings.get("timezone", "Asia/Shanghai"))
+
+
+def _display_zoneinfo(settings: Mapping[str, Any]) -> ZoneInfo:
+    return ZoneInfo(_display_timezone(settings))
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -478,6 +490,17 @@ INDEX_HTML = r"""<!doctype html>
       break: "午间休市"
     }[value] || value);
 
+    function timeZoneLabel(value, fallback) {
+      const text = String(value || "");
+      const match = text.match(/([+-]\d{2}:\d{2}|Z)$/);
+      return match ? `UTC${match[1] === "Z" ? "+00:00" : match[1]}` : fallback;
+    }
+
+    function formatTime(value, fallbackZone = state.data?.display_timezone || "Asia/Shanghai", length = 19) {
+      if (!value) return "";
+      return `${String(value).replace("T", " ").slice(0, length)} ${timeZoneLabel(value, fallbackZone)}`;
+    }
+
     function toast(text) {
       const el = document.getElementById("toast");
       el.textContent = text;
@@ -511,7 +534,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="market-status">
           <strong>${market === "us_equities" ? "US Equities" : "A Share"}</strong>
           <div class="state ${esc(item.state)}">${esc(stateLabel(item.state))}</div>
-          <div class="subtle">北京时间 ${esc(fmt(item.as_of_beijing).replace("T", " ").slice(0, 19))}</div>
+          <div class="subtle">${esc(formatTime(item.as_of_beijing))}</div>
         </div>
       `).join("");
     }
@@ -520,12 +543,13 @@ INDEX_HTML = r"""<!doctype html>
       const markets = Object.entries(data.markets || {});
       const openMarkets = markets.filter(([, item]) => item.state === "open").map(([market]) => marketLabel(market));
       const quotedHoldings = (data.holdings || []).filter(item => item.quote).length;
+      const quoteRefreshFailures = (((data.quote_refresh || {}).failures) || []).length;
       const latestBrief = (data.briefs || [])[0];
       document.getElementById("overview").innerHTML = `
         <div class="metric"><span>交易状态</span><strong>${esc(openMarkets.length ? openMarkets.join(" / ") : "休市")}</strong><small>${esc(markets.map(([market, item]) => `${marketLabel(market)} ${stateLabel(item.state)}`).join(" · "))}</small></div>
-        <div class="metric"><span>组合覆盖</span><strong>${esc((data.holdings || []).length)}</strong><small>${quotedHoldings} 个已有最近行情</small></div>
+        <div class="metric"><span>组合覆盖</span><strong>${esc((data.holdings || []).length)}</strong><small>${quoteRefreshFailures ? `${quotedHoldings} 个已有最近行情 · ${quoteRefreshFailures} 个刷新失败` : `${quotedHoldings} 个已有最近行情`}</small></div>
         <div class="metric"><span>盘中提醒</span><strong>${esc((data.notifications || []).length)}</strong><small>来自建议与 outbox 事件</small></div>
-        <div class="metric"><span>最新简报</span><strong>${latestBrief ? esc(latestBrief.name) : "暂无"}</strong><small>${latestBrief ? esc(latestBrief.modified_at.replace("T", " ").slice(0, 16)) : "briefs 目录为空"}</small></div>
+        <div class="metric"><span>最新简报</span><strong>${latestBrief ? esc(latestBrief.name) : "暂无"}</strong><small>${latestBrief ? esc(formatTime(latestBrief.modified_at, latestBrief.timezone, 16)) : "briefs 目录为空"}</small></div>
       `;
     }
 
@@ -544,7 +568,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="quote-line">
             <span class="subtle">最新行情</span>
-            ${h.quote ? `<span><span class="price">${esc(h.quote.price)}</span><br><span class="subtle">${esc(fmt(h.quote.observed_at).replace("T", " ").slice(0, 19))}</span></span>` : `<span class="subtle">暂无</span>`}
+            ${h.quote ? `<span><span class="price">${esc(h.quote.price)}</span><br><span class="subtle">${esc(formatTime(h.quote.observed_at))}</span></span>` : `<span class="subtle">暂无</span>`}
           </div>
           <div>${(h.themes || []).map(t => `<span class="pill">${esc(t)}</span>`).join("") || `<span class="subtle">未设置主题</span>`}</div>
         </article>
@@ -598,7 +622,7 @@ INDEX_HTML = r"""<!doctype html>
       root.innerHTML = alerts.map(a => {
         const klass = `${a.confidence || ""} ${a.action || ""}`.replaceAll("低", "").replaceAll("中", "");
         return `<article class="alert ${esc(klass)}">
-          <div class="meta">${esc(fmt(a.created_at || a.generated_at).replace("T", " ").slice(0, 19))} · ${esc(fmt(a.market))} ${esc(fmt(a.symbol))}</div>
+          <div class="meta">${esc(formatTime(a.created_at || a.generated_at))} · ${esc(fmt(a.market))} ${esc(fmt(a.symbol))}</div>
           <div class="title">${esc(fmt(a.action || a.type || "提醒"))}${a.confidence ? " / " + esc(a.confidence) : ""}</div>
           <p>${esc(fmt(a.rationale || a.output || a.message || ""))}</p>
         </article>`;
@@ -614,7 +638,7 @@ INDEX_HTML = r"""<!doctype html>
       root.innerHTML = briefs.map(b => `
         <a class="brief-row" href="${esc(b.url)}" target="_blank">
           <span><strong>${esc(b.name)}</strong><br><span class="subtle">${esc(b.market || "shared")}</span></span>
-          <span class="subtle">${esc(b.modified_at.replace("T", " ").slice(0, 19))}</span>
+          <span class="subtle">${esc(formatTime(b.modified_at, b.timezone))}</span>
         </a>
       `).join("");
     }
@@ -721,7 +745,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function render(data) {
       state.data = data;
-      document.getElementById("clock").textContent = `本地更新时间 ${data.generated_at.replace("T", " ").slice(0, 19)}`;
+      document.getElementById("clock").textContent = `更新时间 ${formatTime(data.generated_at, data.display_timezone)}`;
       renderMarketStatus(data.markets || {});
       renderOverview(data);
       renderHoldings(data.holdings || []);
@@ -973,6 +997,51 @@ def _latest_quotes(root: Path, settings: Mapping[str, Any]) -> dict[tuple[str, s
     return rows
 
 
+def _refresh_dashboard_quotes(
+    root: Path,
+    settings: Mapping[str, Any],
+    holdings: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    market_data_settings = settings.get("market_data", {})
+    if not isinstance(market_data_settings, Mapping):
+        return []
+    if market_data_settings.get("provider", "yahoo") != "yahoo":
+        return []
+
+    state_settings = settings.get("state", {})
+    db_path = resolve_path(root, state_settings.get("database_path", "state/portfolio.db"))
+    collector_settings = settings.get("collectors", {})
+    if not isinstance(collector_settings, Mapping):
+        collector_settings = {}
+    client = HttpClient(
+        str(collector_settings.get("user_agent", "market-analyzer-agents/0.1")),
+        int(collector_settings.get("timeout_seconds", 30)),
+        int(collector_settings.get("max_retries", 2)),
+        float(collector_settings.get("retry_backoff_seconds", 1.0)),
+    )
+    failures = []
+    with PortfolioStore(db_path) as store:
+        for holding in holdings:
+            market = str(holding.get("market", "")).strip()
+            symbol = str(holding.get("symbol") or holding.get("ticker") or "").strip().upper()
+            if market not in MARKETS or not symbol:
+                continue
+            try:
+                data = fetch_yahoo_market_data(
+                    client,
+                    market,
+                    symbol,
+                    history_range=str(market_data_settings.get("history_range", "6mo")),
+                    history_interval=str(market_data_settings.get("history_interval", "1d")),
+                )
+            except Exception as exc:
+                failures.append({"market": market, "symbol": symbol, "error": str(exc)})
+                continue
+            store.save_quotes([data.quote])
+            store.save_price_bars(data.history)
+    return failures
+
+
 def _recent_suggestions(root: Path, settings: Mapping[str, Any], limit: int = 40) -> list[dict[str, Any]]:
     db_path = resolve_path(root, settings.get("state", {}).get("database_path", "state/portfolio.db"))
     if not db_path.exists():
@@ -1021,6 +1090,8 @@ def _brief_files(root: Path, settings: Mapping[str, Any], limit: int = 20) -> li
     brief_root = resolve_path(root, "briefs")
     if not brief_root.exists():
         return []
+    display_timezone = _display_timezone(settings)
+    display_zone = _display_zoneinfo(settings)
     files = [
         path
         for path in brief_root.rglob("*")
@@ -1039,19 +1110,28 @@ def _brief_files(root: Path, settings: Mapping[str, Any], limit: int = 20) -> li
                 "name": path.stem,
                 "market": market,
                 "url": "/briefs/" + urllib.parse.quote(relative.as_posix()),
-                "modified_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+                "modified_at": datetime.fromtimestamp(path.stat().st_mtime, display_zone).isoformat(timespec="seconds"),
+                "timezone": display_timezone,
             }
         )
     return result
 
 
-def load_dashboard_state(root: Path | None = None) -> dict[str, Any]:
+def load_dashboard_state(root: Path | None = None, *, refresh_quotes: bool = False) -> dict[str, Any]:
     project_root = root or find_project_root()
     settings = load_settings(project_root)
+    display_timezone = _display_timezone(settings)
+    display_zone = _display_zoneinfo(settings)
     sources = _read_sources(project_root, settings)
+    configured_holdings = [dict(holding) for holding in configured_portfolio_holdings(sources)]
+    quote_refresh_failures = (
+        _refresh_dashboard_quotes(project_root, settings, configured_holdings)
+        if refresh_quotes
+        else []
+    )
     quotes = _latest_quotes(project_root, settings)
     holdings = []
-    for holding in configured_portfolio_holdings(sources):
+    for holding in configured_holdings:
         copied = dict(holding)
         key = (copied["market"], str(copied.get("symbol", copied["ticker"])).upper())
         copied["quote"] = quotes.get(key)
@@ -1086,13 +1166,18 @@ def load_dashboard_state(root: Path | None = None) -> dict[str, Any]:
             seen.add(key)
 
     return {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": datetime.now(display_zone).isoformat(timespec="seconds"),
+        "display_timezone": display_timezone,
         "markets": markets,
         "holdings": holdings,
         "focus_topics": configured_focus_topics(sources),
         "configuration": _model_configuration(settings),
         "notifications": notifications[:50],
         "briefs": _brief_files(project_root, settings),
+        "quote_refresh": {
+            "attempted": refresh_quotes,
+            "failures": quote_refresh_failures,
+        },
     }
 
 
@@ -1224,7 +1309,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", INDEX_HTML.encode("utf-8"))
             return
         if parsed.path == "/api/state":
-            self._send_json(load_dashboard_state(self.root))
+            self._send_json(load_dashboard_state(self.root, refresh_quotes=True))
             return
         if parsed.path == "/events":
             self._send_events()
@@ -1294,7 +1379,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         brief_root = (self.root / "briefs").resolve()
         if path == "/briefs/":
             body = "\n".join(
-                f'<a href="{item["url"]}">{item["name"]}</a><br>'
+                f'<a href="{item["url"]}">{item["name"]}</a> '
+                f'<span>{item["modified_at"].replace("T", " ")} {item["timezone"]}</span><br>'
                 for item in _brief_files(self.root, load_settings(self.root), limit=200)
             )
             self._send_bytes(

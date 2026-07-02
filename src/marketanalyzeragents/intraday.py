@@ -286,18 +286,23 @@ def build_suggestion(store: PortfolioStore, quote: Quote, evidence_ids: Sequence
         "confidence": "中" if material and evidence_ids else "低",
         "rationale": (
             f"价格相对可比基准变化 {change_pct:+.2f}%。"
-            + ("存在已验证资讯，需人工或模型结合持仓约束判断。" if evidence_ids else "缺少同期已验证资讯，不生成买卖方向。")
+            + (
+                "存在已验证资讯，但未经过模型或策略裁决，未形成操作建议。"
+                if evidence_ids
+                else "缺少同期已验证资讯，不生成买卖方向。"
+            )
         ),
         "evidence_ids": list(evidence_ids),
         "invalidation": "行情数据过期、交易时段结束或出现新的公司/宏观证据时重新评估。",
         "price_change_pct": round(change_pct, 4),
         "signal": "material_price_move" if material else "routine_poll",
+        "decision_source": "deterministic_observation",
     }
 
 
 def should_run_agent_debate(suggestion: Mapping[str, Any]) -> bool:
     """Only spend model calls on events that can change a user's decision."""
-    return bool(suggestion.get("evidence_ids")) or suggestion.get("signal") == "material_price_move"
+    return bool(suggestion.get("evidence_ids"))
 
 
 def should_emit_suggestion(
@@ -305,13 +310,18 @@ def should_emit_suggestion(
     *,
     emit_low_signal: bool = False,
 ) -> bool:
-    """Suppress routine low-signal observations while keeping real alerts auditable."""
+    """Suppress observations that have no verified evidence by default."""
     if emit_low_signal:
         return True
+    if (
+        suggestion.get("decision_source") == "deterministic_observation"
+        and suggestion.get("action") == "观察"
+    ):
+        return False
+    if not suggestion.get("evidence_ids"):
+        return suggestion.get("action") != "观察"
     if suggestion.get("action") != "观察":
         return True
     if suggestion.get("confidence") != "低":
         return True
-    if suggestion.get("evidence_ids"):
-        return True
-    return suggestion.get("signal") == "material_price_move"
+    return False

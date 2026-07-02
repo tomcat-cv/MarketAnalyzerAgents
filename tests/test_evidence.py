@@ -8,6 +8,7 @@ from marketanalyzeragents.evidence import (
     dedupe_evidence,
     evidence_only_brief_markdown,
     filter_evidence_pack,
+    model_summary_brief_markdown,
     parse_model_brief,
     source_log_markdown,
     validate_summary_citations,
@@ -139,6 +140,79 @@ class EvidenceContractTests(unittest.TestCase):
             [{"ticker": "NVDA"}],
         )
         self.assertEqual(result.portfolio_actions[0].action, "持有")
+
+    def test_structured_output_accepts_aggregated_market_summaries(self) -> None:
+        item = evidence()
+        item.id = "EVID-001"
+        pack = EvidencePack("2026-06-04T08:00:00+00:00", 24, items=[item])
+        result = parse_model_brief(
+            """
+            {
+              "market_summaries": [{
+                "topic": "AI infrastructure",
+                "summary": "可靠来源显示该主题仍需跟踪。",
+                "evidence_ids": ["EVID-001"]
+              }],
+              "portfolio_actions": [{
+                "ticker": "NVDA",
+                "action": "持有",
+                "confidence": "低",
+                "rationale": "基于给定证据。",
+                "evidence_ids": ["EVID-001"],
+                "watch_for": "等待更新。"
+              }]
+            }
+            """,
+            pack,
+            [{"ticker": "NVDA"}],
+        )
+
+        self.assertEqual(result.market_summaries[0].topic, "AI infrastructure")
+        self.assertEqual(result.summaries, {})
+
+    def test_aggregated_brief_does_not_expand_every_evidence_item(self) -> None:
+        first = evidence()
+        first.id = "EVID-001"
+        first.title = "First raw item"
+        second = evidence("https://official.example/second")
+        second.id = "EVID-002"
+        second.title = "Second raw item"
+        pack = EvidencePack("2026-06-04T08:00:00+00:00", 24, items=[first, second])
+        result = parse_model_brief(
+            """
+            {
+              "market_summaries": [{
+                "topic": "Aggregated theme",
+                "summary": "两条可靠证据共同指向同一观察主题。",
+                "evidence_ids": ["EVID-001", "EVID-002"]
+              }],
+              "portfolio_actions": [{
+                "ticker": "NVDA",
+                "action": "持有",
+                "confidence": "低",
+                "rationale": "基于给定证据。",
+                "evidence_ids": ["EVID-001"],
+                "watch_for": "等待更新。"
+              }]
+            }
+            """,
+            pack,
+            [{"ticker": "NVDA"}],
+        )
+
+        rendered = model_summary_brief_markdown(
+            pack,
+            {},
+            {},
+            date(2026, 6, 4),
+            holdings=[{"ticker": "NVDA", "market": "us_equities"}],
+            portfolio_actions=result.portfolio_actions,
+            market_summaries=result.market_summaries,
+        )
+
+        self.assertIn("Aggregated theme", rendered)
+        self.assertNotIn("#### EVID-001 · First raw item", rendered)
+        self.assertNotIn("#### EVID-002 · Second raw item", rendered)
 
     def test_directional_decision_without_evidence_is_rejected(self) -> None:
         item = evidence()

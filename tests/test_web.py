@@ -2,7 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from marketanalyzeragents.intraday import MarketData
+from marketanalyzeragents.portfolio_store import PriceBar, Quote
 from marketanalyzeragents.web import (
     INDEX_HTML,
     delete_focus_topic,
@@ -65,8 +68,42 @@ class WebDashboardTests(unittest.TestCase):
 
         self.assertEqual(state["holdings"][0]["ticker"], "NVDA")
         self.assertEqual(state["briefs"][0]["market"], "us_equities")
+        self.assertEqual(state["display_timezone"], "Asia/Shanghai")
+        self.assertEqual(state["briefs"][0]["timezone"], "Asia/Shanghai")
+        self.assertIn("+08:00", state["generated_at"])
+        self.assertIn("+08:00", state["briefs"][0]["modified_at"])
         self.assertIn("us_equities", state["markets"])
         self.assertEqual(state["configuration"]["backend"], "zhipu")
+
+    def test_dashboard_refresh_fetches_current_quotes_before_rendering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            settings_path = root / "config" / "settings.json"
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            settings["market_data"] = {
+                "provider": "yahoo",
+                "history_range": "1mo",
+                "history_interval": "1d",
+            }
+            settings_path.write_text(json.dumps(settings), encoding="utf-8")
+            quote = Quote("us_equities", "NVDA", "2026-06-29T13:30:00+00:00", 125.5, 120.0)
+            history = (
+                PriceBar("us_equities", "NVDA", "1d", "2026-06-28T00:00:00+00:00", 119, 121, 118, 120, 100),
+                PriceBar("us_equities", "NVDA", "1d", "2026-06-29T00:00:00+00:00", 120, 126, 119, 125.5, 120),
+            )
+
+            with patch(
+                "marketanalyzeragents.web.fetch_yahoo_market_data",
+                return_value=MarketData(quote=quote, history=history, metrics={}),
+            ) as fetch:
+                state = load_dashboard_state(root, refresh_quotes=True)
+
+        fetch.assert_called_once()
+        self.assertTrue(state["quote_refresh"]["attempted"])
+        self.assertEqual(state["quote_refresh"]["failures"], [])
+        self.assertEqual(state["holdings"][0]["quote"]["price"], 125.5)
+        self.assertEqual(state["holdings"][0]["quote"]["observed_at"], "2026-06-29T13:30:00+00:00")
 
     def test_upsert_and_delete_holding_update_sources_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,6 +191,11 @@ class WebDashboardTests(unittest.TestCase):
         self.assertNotIn("data-delete", home_renderer)
         self.assertIn("data-edit-holding", config_renderer)
         self.assertIn("data-delete", config_renderer)
+
+    def test_dashboard_template_labels_displayed_times(self) -> None:
+        self.assertIn("function formatTime", INDEX_HTML)
+        self.assertIn("display_timezone", INDEX_HTML)
+        self.assertIn("更新时间 ${formatTime(data.generated_at, data.display_timezone)}", INDEX_HTML)
 
 
 if __name__ == "__main__":

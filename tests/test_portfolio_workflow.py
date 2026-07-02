@@ -40,6 +40,59 @@ class PortfolioWorkflowTests(unittest.TestCase):
         self.assertIn("idx_suggestions_lookup", indexes)
         self.assertIn("idx_operations_review", indexes)
         self.assertIn("idx_agent_discussions_suggestion", indexes)
+        self.assertIn("idx_evidence_items_recent", indexes)
+
+    def test_store_persists_and_filters_recent_evidence_by_ticker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PortfolioStore(Path(tmp) / "state.db")
+            store.save_evidence_pack(
+                {
+                    "retrieved_at": "2026-06-23T17:58:00+00:00",
+                    "lookback_hours": 24,
+                    "window_start": "",
+                    "window_end": "",
+                    "window_mode": "rolling_hours",
+                    "timezone": "Asia/Shanghai",
+                    "items": [
+                        {
+                            "id": "EVID-001",
+                            "title": "NVIDIA update",
+                            "published_at": "2026-06-23T17:55:00+00:00",
+                            "source_name": "Official",
+                            "source_type": "primary",
+                            "url": "https://example.test/nvda",
+                            "display_url": "",
+                            "content": "verified update",
+                            "matched_topics": [],
+                            "matched_tickers": ["NVDA"],
+                            "evidence_level": "summary",
+                        },
+                        {
+                            "id": "EVID-002",
+                            "title": "Title only",
+                            "published_at": "2026-06-23T17:56:00+00:00",
+                            "source_name": "Official",
+                            "source_type": "primary",
+                            "url": "https://example.test/title",
+                            "display_url": "",
+                            "content": "title only",
+                            "matched_topics": [],
+                            "matched_tickers": ["NVDA"],
+                            "evidence_level": "title_only",
+                        },
+                    ],
+                    "errors": [],
+                    "coverage": [],
+                }
+            )
+
+            grouped = store.recent_summary_evidence_for_tickers(
+                ["NVDA"],
+                since=datetime(2026, 6, 23, 17, 0, tzinfo=timezone.utc),
+            )
+            store.close()
+
+        self.assertEqual([item["id"] for item in grouped["NVDA"]], ["EVID-001"])
 
     def test_market_symbols_are_normalized_for_both_markets(self) -> None:
         self.assertEqual(yahoo_symbol("a_share", "600519"), "600519.SS")
@@ -141,7 +194,7 @@ class PortfolioWorkflowTests(unittest.TestCase):
         self.assertFalse(should_emit_suggestion(suggestion))
         self.assertTrue(should_emit_suggestion(suggestion, emit_low_signal=True))
 
-    def test_material_price_moves_still_emit_even_without_news(self) -> None:
+    def test_material_price_moves_without_news_are_not_emitted_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PortfolioStore(Path(tmp) / "state.db")
             quote = Quote("us_equities", "MRVL", "2026-06-23T17:57:04+00:00", 103, 100)
@@ -149,8 +202,23 @@ class PortfolioWorkflowTests(unittest.TestCase):
             suggestion = build_suggestion(store, quote)
 
         self.assertEqual(suggestion["signal"], "material_price_move")
+        self.assertFalse(should_run_agent_debate(suggestion))
+        self.assertFalse(should_emit_suggestion(suggestion))
+        self.assertTrue(should_emit_suggestion(suggestion, emit_low_signal=True))
+
+    def test_conservative_observations_with_news_are_not_suggestions_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PortfolioStore(Path(tmp) / "state.db")
+            quote = Quote("us_equities", "MRVL", "2026-06-23T17:57:04+00:00", 103, 100)
+            store.save_quotes([quote])
+            suggestion = build_suggestion(store, quote, ["E1"])
+
+        self.assertEqual(suggestion["action"], "观察")
+        self.assertEqual(suggestion["confidence"], "中")
+        self.assertEqual(suggestion["decision_source"], "deterministic_observation")
+        self.assertIn("未形成操作建议", suggestion["rationale"])
         self.assertTrue(should_run_agent_debate(suggestion))
-        self.assertTrue(should_emit_suggestion(suggestion))
+        self.assertFalse(should_emit_suggestion(suggestion))
 
     def test_review_uses_only_suggestion_available_before_operation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -12,6 +12,6 @@
     "holidays": [],
     "extra_open_dates": [],
     "early_closes": {},
-    "poll_interval_seconds": 60
+    "poll_interval_seconds": 1800
   }
 }
