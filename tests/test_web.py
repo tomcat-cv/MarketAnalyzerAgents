@@ -119,7 +119,7 @@ class WebCoreTests(unittest.TestCase):
                 {
                     "official_sources": [{"type": "rss", "enabled": True, "name": "Fed", "url": "https://example.com/rss"}],
                     "social_sources": {"x": {"enabled": True, "keywords": ["NVDA"], "accounts": []}},
-                    "fear_greed": {"value": "35", "label": "Fear"},
+                    "fear_greed": {"value": "35", "label": "Fear", "source_url": "https://example.com/fear"},
                 },
             )
 
@@ -128,6 +128,7 @@ class WebCoreTests(unittest.TestCase):
         self.assertEqual(sources["focus_topics"], [{"id": "energy", "name": "能源", "keywords": ["power", "utility"]}])
         self.assertEqual(sources["official_sources"][0]["name"], "Fed")
         self.assertEqual(sources["fear_greed"]["label"], "Fear")
+        self.assertEqual(sources["fear_greed"]["source_url"], "https://example.com/fear")
 
     def test_model_configuration_updates_settings_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -143,6 +144,8 @@ class WebCoreTests(unittest.TestCase):
                     "zhipu_model": "glm-test",
                     "advice_backend": "dry-run",
                     "debate_rounds": "2",
+                    "report_schedule": "09:00,15:30",
+                    "intraday_suggestion_interval_seconds": "600",
                 },
             )
             settings = json.loads((root / "config" / "settings.json").read_text(encoding="utf-8"))
@@ -151,6 +154,8 @@ class WebCoreTests(unittest.TestCase):
         self.assertEqual(settings["openai"]["model"], "gpt-test")
         self.assertEqual(settings["zhipu"]["model"], "glm-test")
         self.assertEqual(settings["intraday_agents"]["advice_backend"], "dry-run")
+        self.assertEqual(settings["report_schedule"], ["09:00", "15:30"])
+        self.assertEqual(settings["intraday_suggestion_interval_seconds"], 600)
 
     def test_dry_run_report_creates_json_and_html_archive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

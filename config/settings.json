@@ -18,18 +18,18 @@
   "markets": {
     "a_share": {
       "calendar": {
-        "provider": "config",
-        "path": "",
-        "strict": false
+        "provider": "file",
+        "path": "config/calendars/a_share_2026.json",
+        "strict": true
       },
       "holidays": [],
       "poll_interval_seconds": 1800
     },
     "us_equities": {
       "calendar": {
-        "provider": "config",
-        "path": "",
-        "strict": false
+        "provider": "file",
+        "path": "config/calendars/us_equities_2026.json",
+        "strict": true
       },
       "holidays": [],
       "poll_interval_seconds": 1800

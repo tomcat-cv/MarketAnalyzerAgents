@@ -99,6 +99,14 @@
                   <label>讨论轮数</label>
                   <input name="debate_rounds" type="number" min="1" max="3" step="1">
                 </div>
+                <div>
+                  <label>默认报告时间</label>
+                  <input name="report_schedule" placeholder="08:00, 14:00, 20:00">
+                </div>
+                <div>
+                  <label>盘中建议间隔秒数</label>
+                  <input name="intraday_suggestion_interval_seconds" type="number" min="60" step="60">
+                </div>
               </div>
               <div class="actions">
                 <button type="submit">保存模型</button>
@@ -165,6 +173,17 @@
                   <textarea name="x_accounts"></textarea>
                 </div>
                 <div>
+                  <label>X 适配器</label>
+                  <select name="x_adapter">
+                    <option value="disabled">未启用</option>
+                    <option value="manual">手动帖子</option>
+                  </select>
+                </div>
+                <div class="wide">
+                  <label>X 手动帖子，每行：作者 | 发布时间 | 情绪 | URL | 正文</label>
+                  <textarea name="x_manual_posts"></textarea>
+                </div>
+                <div>
                   <label>小红书关键词</label>
                   <textarea name="xiaohongshu_keywords"></textarea>
                 </div>
@@ -173,12 +192,27 @@
                   <textarea name="xiaohongshu_accounts"></textarea>
                 </div>
                 <div>
+                  <label>小红书适配器</label>
+                  <select name="xiaohongshu_adapter">
+                    <option value="disabled">未启用</option>
+                    <option value="manual">手动帖子</option>
+                  </select>
+                </div>
+                <div class="wide">
+                  <label>小红书手动帖子，每行：作者 | 发布时间 | 情绪 | URL | 正文</label>
+                  <textarea name="xiaohongshu_manual_posts"></textarea>
+                </div>
+                <div>
                   <label>恐惧贪婪指数</label>
                   <input name="fear_value" placeholder="0-100">
                 </div>
                 <div>
                   <label>指数标签</label>
                   <input name="fear_label" placeholder="Fear / Neutral / Greed">
+                </div>
+                <div class="wide">
+                  <label>指数来源链接</label>
+                  <input name="fear_source_url" placeholder="https://www.cnn.com/markets/fear-and-greed">
                 </div>
               </div>
               <div class="actions">

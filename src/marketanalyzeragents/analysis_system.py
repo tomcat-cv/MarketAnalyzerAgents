@@ -11,19 +11,19 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from .collectors import collect_rss_items
-from .collectors_core import HttpClient, resolve_research_window, strip_html
+from .collectors_core import HttpClient, resolve_research_window
 from .config import load_json, load_settings, resolve_path
-from .evidence import configured_portfolio_holdings
+from .evidence import EvidenceItem, configured_portfolio_holdings, dedupe_evidence
 from .intraday import MarketDataProviderError, fetch_market_data
 from .market_calendar import calendar_from_settings, market_status
 from .openai_runner import run_openai
 from .portfolio_snapshots import normalize_holding
+from .social_adapters import SocialPost, collect_social_posts
 from .writer import markdown_to_html, write_json, write_json_atomic, write_text
 from .zhipu_runner import run_zhipu
 
 
 MARKETS = ("a_share", "us_equities")
-SOCIAL_PLATFORMS = ("x", "xiaohongshu")
 REPORT_SCHEDULES = ("08:00", "14:00", "20:00")
 
 
@@ -36,17 +36,6 @@ class OfficialItem:
     summary: str
     topics: list[str] = field(default_factory=list)
     tickers: list[str] = field(default_factory=list)
-
-
-@dataclass
-class SocialPost:
-    platform: str
-    author: str
-    published_at: str
-    url: str
-    text: str
-    keywords: list[str] = field(default_factory=list)
-    sentiment: str = "neutral"
 
 
 @dataclass
@@ -119,6 +108,19 @@ def _string_list(value: Any) -> list[str]:
     return [item.strip() for item in pieces if item.strip()]
 
 
+def _time_list(value: Any) -> list[str]:
+    result = []
+    for item in _string_list(value):
+        if not re.fullmatch(r"[0-2]\d:[0-5]\d", item):
+            raise ValueError("time values must use HH:MM")
+        hour = int(item.split(":", 1)[0])
+        if hour > 23:
+            raise ValueError("time values must use HH:MM")
+        if item not in result:
+            result.append(item)
+    return result
+
+
 def _model_configuration(settings: Mapping[str, Any]) -> dict[str, Any]:
     backend = str(settings.get("backend", "zhipu"))
     openai_settings = settings.get("openai", {})
@@ -140,6 +142,8 @@ def _model_configuration(settings: Mapping[str, Any]) -> dict[str, Any]:
         "zhipu_model": str(zhipu_settings.get("model", "")),
         "advice_backend": str(intraday.get("advice_backend", backend)),
         "debate_rounds": int(intraday.get("debate_rounds", 1)),
+        "report_schedule": list(settings.get("report_schedule", REPORT_SCHEDULES)),
+        "intraday_suggestion_interval_seconds": int(settings.get("intraday_suggestion_interval_seconds", 1800)),
     }
 
 
@@ -182,6 +186,16 @@ def update_model_configuration(root: Path, payload: Mapping[str, Any]) -> dict[s
         if rounds < 1 or rounds > 3:
             raise ValueError("debate_rounds must be between 1 and 3")
         settings["intraday_agents"]["debate_rounds"] = rounds
+    if "report_schedule" in payload:
+        schedule = _time_list(payload.get("report_schedule", []))
+        if not schedule:
+            raise ValueError("report_schedule must contain at least one HH:MM time")
+        settings["report_schedule"] = schedule
+    if str(payload.get("intraday_suggestion_interval_seconds", "")).strip():
+        interval = int(payload["intraday_suggestion_interval_seconds"])
+        if interval < 60:
+            raise ValueError("intraday_suggestion_interval_seconds must be at least 60")
+        settings["intraday_suggestion_interval_seconds"] = interval
     write_json_atomic(path, settings)
     return _model_configuration(load_settings(root))
 
@@ -268,7 +282,11 @@ def update_source_configuration(root: Path, payload: Mapping[str, Any]) -> dict[
     sources = read_sources(root, settings)
     sources["official_sources"] = payload.get("official_sources", [])
     sources["social_sources"] = payload.get("social_sources", {})
-    sources["fear_greed"] = payload.get("fear_greed", {})
+    fear_greed = dict(payload.get("fear_greed", {})) if isinstance(payload.get("fear_greed", {}), Mapping) else {}
+    existing_fear_greed = sources.get("fear_greed", {})
+    if isinstance(existing_fear_greed, Mapping) and "source_url" not in fear_greed:
+        fear_greed["source_url"] = existing_fear_greed.get("source_url", "")
+    sources["fear_greed"] = fear_greed
     write_sources(root, settings, sources)
     return {
         "official_sources": sources["official_sources"],
@@ -281,15 +299,7 @@ def _configured_official_sources(sources: Mapping[str, Any]) -> list[dict[str, A
     raw = sources.get("official_sources")
     if isinstance(raw, list):
         return [dict(item) for item in raw if isinstance(item, Mapping) and item.get("enabled", True)]
-    legacy = sources.get("collectors", {})
-    if not isinstance(legacy, Mapping):
-        return []
-    feeds: list[dict[str, Any]] = []
-    for key in ("rss_feeds", "company_rss_feeds"):
-        for item in legacy.get(key, []):
-            if isinstance(item, Mapping) and item.get("enabled", True):
-                feeds.append(dict(item))
-    return feeds
+    return []
 
 
 def _collect_official(root: Path, settings: Mapping[str, Any], sources: Mapping[str, Any]) -> tuple[list[OfficialItem], list[str]]:
@@ -302,8 +312,8 @@ def _collect_official(root: Path, settings: Mapping[str, Any], sources: Mapping[
         int(collector_settings.get("max_retries", 2)),
         float(collector_settings.get("retry_backoff_seconds", 1.0)),
     )
-    window = resolve_research_window(settings)
-    items: list[OfficialItem] = []
+    window_start, window_end, _ = resolve_research_window(settings)
+    items: list[EvidenceItem] = []
     warnings: list[str] = []
     for source in _configured_official_sources(sources):
         if str(source.get("type", "rss")) != "rss":
@@ -312,76 +322,32 @@ def _collect_official(root: Path, settings: Mapping[str, Any], sources: Mapping[
             rss_items = collect_rss_items(
                 client=client,
                 feed=source,
-                cutoff=window.start,
-                window_end=window.end,
+                cutoff=window_start,
+                window_end=window_end,
             )
         except Exception as exc:
             warnings.append(f"{source.get('name', source.get('url', 'official source'))}: {exc}")
             continue
         for item in rss_items:
-            items.append(
-                OfficialItem(
-                    title=item.title,
-                    source=item.source_name,
-                    published_at=item.published_at,
-                    url=item.url,
-                    summary=item.content,
-                    topics=item.matched_topics,
-                    tickers=item.matched_tickers,
-                )
-            )
-    return items, warnings
-
-
-def _classify_sentiment(text: str) -> str:
-    value = text.casefold()
-    positive = ("看多", "利好", "上涨", "突破", "增长", "超预期", "bull", "buy", "positive")
-    negative = ("看空", "利空", "下跌", "破位", "衰退", "低预期", "bear", "sell", "negative")
-    pos = sum(1 for word in positive if word in value)
-    neg = sum(1 for word in negative if word in value)
-    if pos > neg:
-        return "positive"
-    if neg > pos:
-        return "negative"
-    return "neutral"
-
-
-def _collect_social(sources: Mapping[str, Any]) -> tuple[list[SocialPost], list[str]]:
-    social = sources.get("social_sources", {})
-    if not isinstance(social, Mapping):
-        return [], []
-    posts: list[SocialPost] = []
-    warnings: list[str] = []
-    for platform in SOCIAL_PLATFORMS:
-        config = social.get(platform, {})
-        if not isinstance(config, Mapping) or not config.get("enabled", True):
-            continue
-        keywords = _string_list(config.get("keywords", []))
-        for raw_post in config.get("manual_posts", []):
-            if not isinstance(raw_post, Mapping):
-                continue
-            text = strip_html(str(raw_post.get("text", "")).strip())
-            if not text:
-                continue
-            posts.append(
-                SocialPost(
-                    platform=platform,
-                    author=str(raw_post.get("author", "")).strip(),
-                    published_at=str(raw_post.get("published_at", "")).strip(),
-                    url=str(raw_post.get("url", "")).strip(),
-                    text=text,
-                    keywords=keywords,
-                    sentiment=str(raw_post.get("sentiment") or _classify_sentiment(text)),
-                )
-            )
-        if config.get("accounts") or config.get("keywords"):
-            warnings.append(f"{platform} 已配置账号/关键词；当前核心实现等待授权采集适配器写入 manual_posts。")
-    return posts, warnings
+            items.append(item)
+    max_items = int(collector_settings.get("max_evidence_items", 200))
+    return [
+        OfficialItem(
+            title=item.title,
+            source=item.source_name,
+            published_at=item.published_at,
+            url=item.url,
+            summary=item.content,
+            topics=item.matched_topics,
+            tickers=item.matched_tickers,
+        )
+        for item in dedupe_evidence(items, max_items)
+    ], warnings
 
 
 def collect_content(root: Path, settings: Mapping[str, Any], sources: Mapping[str, Any]) -> ContentPack:
     official, official_warnings = _collect_official(root, settings, sources)
-    social_posts, social_warnings = _collect_social(sources)
+    social_posts, social_warnings = collect_social_posts(sources)
     return ContentPack(
         official=official,
         social_posts=social_posts,
@@ -507,6 +473,10 @@ def generate_intraday_suggestion(root: Path, *, backend: str | None = None) -> d
     settings = load_settings(root)
     sources = read_sources(root, settings)
     run_at = beijing_now(settings)
+    intraday_settings = settings.get("intraday_agents", {})
+    if not isinstance(intraday_settings, Mapping):
+        intraday_settings = {}
+    debate_rounds = int(intraday_settings.get("debate_rounds", 1))
     holdings = configured_portfolio_holdings(sources)
     quote_rows: list[dict[str, Any]] = []
     quote_errors: list[str] = []
@@ -545,10 +515,11 @@ def generate_intraday_suggestion(root: Path, *, backend: str | None = None) -> d
         "official": [item.__dict__ for item in pack.official[:12]],
         "social_summary": social_summary(pack.social_posts),
         "fear_greed": sources.get("fear_greed", {}),
+        "debate_rounds": debate_rounds,
     }
     system = (
         "你是盘中多 agent 讨论的主持人。用市场分析师、新闻分析师、多头研究员、空头研究员、"
-        "风险经理、组合经理六个职责形成简短结论，最后给出可执行的持仓级操作建议。"
+        f"风险经理、组合经理六个职责形成 {debate_rounds} 轮简短讨论，最后给出可执行的持仓级操作建议。"
         "不要输出无意义免责声明；建议必须有触发条件、风险点、观察位。"
     )
     try:
@@ -556,7 +527,7 @@ def generate_intraday_suggestion(root: Path, *, backend: str | None = None) -> d
             settings,
             system=system,
             user=json.dumps(payload, ensure_ascii=False, indent=2),
-            backend=backend or str(settings.get("intraday_agents", {}).get("advice_backend", settings.get("backend", "zhipu"))),
+            backend=backend or str(intraday_settings.get("advice_backend", settings.get("backend", "zhipu"))),
         )
     except Exception as exc:
         pack.source_warnings.append(f"model: {exc}")
@@ -646,6 +617,24 @@ def dashboard_state(root: Path) -> dict[str, Any]:
     }
 
 
+def _open_market_suggestion_interval(settings: Mapping[str, Any], market_states: Mapping[str, Any]) -> int | None:
+    intervals: list[int] = []
+    markets = settings.get("markets", {})
+    if not isinstance(markets, Mapping):
+        markets = {}
+    for market, state in market_states.items():
+        if not isinstance(state, Mapping) or state.get("state") != "open":
+            continue
+        market_settings = markets.get(market, {})
+        if not isinstance(market_settings, Mapping):
+            market_settings = {}
+        intervals.append(int(market_settings.get("poll_interval_seconds", settings.get("intraday_suggestion_interval_seconds", 1800))))
+    if not intervals:
+        return None
+    global_interval = int(settings.get("intraday_suggestion_interval_seconds", 1800))
+    return max(60, min([global_interval, *intervals]))
+
+
 def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = False) -> None:
     last_report_key = ""
     last_suggestion_key = ""
@@ -662,12 +651,12 @@ def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = Fal
         if current_minute in schedule and last_report_key != f"{current_day_key} {current_minute}":
             generate_market_report(root, slot=current_minute)
             last_report_key = f"{current_day_key} {current_minute}"
-        any_open = any(item.get("state") == "open" for item in dashboard_state(root)["markets"].values())
+        market_states = dashboard_state(root)["markets"]
+        suggestion_interval = _open_market_suggestion_interval(settings, market_states)
         suggestion_key = now.strftime("%Y-%m-%d %H:%M")
-        if any_open and suggestion_key != last_suggestion_key:
-            interval = int(settings.get("intraday_suggestion_interval_seconds", 1800))
+        if suggestion_interval is not None and suggestion_key != last_suggestion_key:
             seconds_since_hour = now.minute * 60 + now.second
-            if seconds_since_hour % interval < tick_seconds:
+            if seconds_since_hour % suggestion_interval < tick_seconds:
                 generate_intraday_suggestion(root)
                 last_suggestion_key = suggestion_key
         time.sleep(max(1, tick_seconds))

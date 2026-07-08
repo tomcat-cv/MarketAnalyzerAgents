@@ -202,6 +202,34 @@ function lines(value) {
   return String(value || "").split(/\n|,|，/).map(item => item.trim()).filter(Boolean);
 }
 
+function socialAdapter(config) {
+  if (config?.adapter) return config.adapter;
+  return (config?.manual_posts || []).length ? "manual" : "disabled";
+}
+
+function formatManualPosts(posts) {
+  return (posts || []).map(item => [
+    item.author || "",
+    item.published_at || "",
+    item.sentiment || "",
+    item.url || "",
+    item.text || ""
+  ].join(" | ")).join("\n");
+}
+
+function parseManualPosts(value) {
+  return String(value || "").split(/\n/).map(line => line.trim()).filter(Boolean).map(line => {
+    const parts = line.split("|").map(part => part.trim());
+    return {
+      author: parts[0] || "",
+      published_at: parts[1] || "",
+      sentiment: parts[2] || "",
+      url: parts[3] || "",
+      text: parts.slice(4).join(" | ").trim()
+    };
+  }).filter(item => item.text);
+}
+
 function renderConfig(data) {
   if (state.configDirty) return;
   const model = document.getElementById("model-form");
@@ -212,16 +240,23 @@ function renderConfig(data) {
   model.openai_model.value = config.openai_model || "";
   model.advice_backend.value = config.advice_backend || "zhipu";
   model.debate_rounds.value = config.debate_rounds || 1;
+  model.report_schedule.value = (config.report_schedule || data.report_schedule || []).join(", ");
+  model.intraday_suggestion_interval_seconds.value = config.intraday_suggestion_interval_seconds || 1800;
 
   const source = document.getElementById("source-form");
   source.official_sources.value = (data.official_sources || []).map(item => `${item.name || ""} | ${item.url || ""} | ${(item.topics || []).join(", ")}`).join("\n");
   const social = data.social_sources || {};
   source.x_keywords.value = ((social.x || {}).keywords || []).join("\n");
   source.x_accounts.value = ((social.x || {}).accounts || []).join("\n");
+  source.x_adapter.value = socialAdapter(social.x);
+  source.x_manual_posts.value = formatManualPosts((social.x || {}).manual_posts);
   source.xiaohongshu_keywords.value = ((social.xiaohongshu || {}).keywords || []).join("\n");
   source.xiaohongshu_accounts.value = ((social.xiaohongshu || {}).accounts || []).join("\n");
+  source.xiaohongshu_adapter.value = socialAdapter(social.xiaohongshu);
+  source.xiaohongshu_manual_posts.value = formatManualPosts((social.xiaohongshu || {}).manual_posts);
   source.fear_value.value = (data.fear_greed || {}).value || "";
   source.fear_label.value = (data.fear_greed || {}).label || "";
+  source.fear_source_url.value = (data.fear_greed || {}).source_url || "";
 }
 
 function render(data) {
@@ -301,10 +336,10 @@ document.getElementById("source-form").addEventListener("submit", async event =>
   await postJson("/api/sources", {
     official_sources: official,
     social_sources: {
-      x: {enabled: true, keywords: lines(form.get("x_keywords")), accounts: lines(form.get("x_accounts")), manual_posts: (state.data.social_sources?.x?.manual_posts || [])},
-      xiaohongshu: {enabled: true, keywords: lines(form.get("xiaohongshu_keywords")), accounts: lines(form.get("xiaohongshu_accounts")), manual_posts: (state.data.social_sources?.xiaohongshu?.manual_posts || [])}
+      x: {enabled: true, adapter: form.get("x_adapter"), keywords: lines(form.get("x_keywords")), accounts: lines(form.get("x_accounts")), manual_posts: parseManualPosts(form.get("x_manual_posts"))},
+      xiaohongshu: {enabled: true, adapter: form.get("xiaohongshu_adapter"), keywords: lines(form.get("xiaohongshu_keywords")), accounts: lines(form.get("xiaohongshu_accounts")), manual_posts: parseManualPosts(form.get("xiaohongshu_manual_posts"))}
     },
-    fear_greed: {value: form.get("fear_value"), label: form.get("fear_label")}
+    fear_greed: {value: form.get("fear_value"), label: form.get("fear_label"), source_url: form.get("fear_source_url")}
   });
   state.configDirty = false;
   toast("来源配置已保存");

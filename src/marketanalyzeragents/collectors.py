@@ -4,13 +4,10 @@ import xml.etree.ElementTree as ET
 from typing import Any, Iterable, Mapping
 
 from .collectors_core import (
-    CollectionError,
     HttpClient,
     hostname_allowed,
     parse_datetime,
-    resolve_research_window,
     strip_html,
-    window_duration_hours,
 )
 from .evidence import EvidenceItem
 

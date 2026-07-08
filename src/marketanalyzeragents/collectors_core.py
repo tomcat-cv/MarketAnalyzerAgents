@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import html
 import json
-import math
 import re
 import time as time_module
 import urllib.error
@@ -107,10 +106,6 @@ def resolve_research_window(
         start = end - timedelta(hours=int(settings.get("lookback_hours", 24)))
         mode = "rolling_hours"
     return start, end, mode
-
-
-def window_duration_hours(start: datetime, end: datetime) -> int:
-    return max(1, math.ceil((end - start).total_seconds() / 3600))
 
 
 class HttpClient:

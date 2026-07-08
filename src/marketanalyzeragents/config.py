@@ -124,6 +124,9 @@ def load_settings(root: Path) -> Dict[str, Any]:
         settings["intraday_suggestion_interval_seconds"] = int(
             os.environ["MARKET_ANALYZER_AGENTS_INTRADAY_INTERVAL_SECONDS"]
         )
+    if os.environ.get("MARKET_ANALYZER_AGENTS_USER_AGENT"):
+        settings.setdefault("collectors", {})
+        settings["collectors"]["user_agent"] = os.environ["MARKET_ANALYZER_AGENTS_USER_AGENT"]
 
     return settings
 

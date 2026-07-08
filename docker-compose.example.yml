@@ -4,12 +4,9 @@ services:
     env_file:
       - .env
     environment:
-      MARKET_ANALYZER_AGENTS_SCHEDULE_MODE: daily
-      MARKET_ANALYZER_AGENTS_SCHEDULE_TIME: "06:00"
-      MARKET_ANALYZER_AGENTS_RUN_ON_START: "false"
+      MARKET_ANALYZER_AGENTS_REPORT_SCHEDULE: "08:00,14:00,20:00"
+      MARKET_ANALYZER_AGENTS_INTRADAY_INTERVAL_SECONDS: "1800"
     volumes:
       - ./config:/app/config:ro
-      - ./briefs:/app/briefs
-      - ./runs:/app/runs
       - ./state:/app/state
     command: ["marketanalyzeragents", "service"]

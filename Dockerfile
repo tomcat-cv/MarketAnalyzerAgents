@@ -11,9 +11,9 @@ COPY src ./src
 COPY config ./config
 
 RUN pip install --no-cache-dir . \
-    && mkdir -p briefs runs state
+    && mkdir -p state/analysis
 
 HEALTHCHECK --interval=5m --timeout=10s --start-period=30s \
-    CMD test -f state/service-health.json || exit 1
+    CMD test -f config/settings.json || exit 1
 
-CMD ["marketanalyzeragents", "schedule"]
+CMD ["marketanalyzeragents", "service"]

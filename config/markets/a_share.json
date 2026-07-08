@@ -2,9 +2,9 @@
   "sources_path": "config/sources.json",
   "market": {
     "calendar": {
-      "provider": "config",
-      "path": "",
-      "strict": false
+      "provider": "file",
+      "path": "config/calendars/a_share_2026.json",
+      "strict": true
     },
     "holidays": [],
     "extra_open_dates": [],

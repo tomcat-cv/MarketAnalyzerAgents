@@ -3,7 +3,9 @@ import urllib.error
 import unittest
 from unittest.mock import patch
 
-from marketanalyzeragents.collectors import HttpClient, collect_rss_items, resolve_research_window
+from marketanalyzeragents.collectors import HttpClient, collect_rss_items
+from marketanalyzeragents.collectors_core import resolve_research_window
+from marketanalyzeragents.analysis_system import _collect_official
 
 
 class FakeClient:
@@ -108,6 +110,32 @@ class CollectorTests(unittest.TestCase):
             window_end=datetime(2026, 6, 4, 7, 59, tzinfo=timezone.utc),
         )
         self.assertEqual(items, [])
+
+    def test_official_collection_uses_resolved_window_tuple(self) -> None:
+        with patch("marketanalyzeragents.analysis_system.HttpClient", return_value=FakeClient()):
+            items, warnings = _collect_official(
+                root=None,
+                settings={
+                    "timezone": "Asia/Shanghai",
+                    "freshness_window": "rolling_hours",
+                    "lookback_hours": 2000,
+                    "collectors": {},
+                },
+                sources={
+                    "official_sources": [
+                        {
+                            "type": "rss",
+                            "enabled": True,
+                            "name": "Official Feed",
+                            "url": "https://official.example/feed.xml",
+                            "allowed_domains": ["official.example"],
+                        }
+                    ]
+                },
+            )
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(items), 1)
 
 
 if __name__ == "__main__":

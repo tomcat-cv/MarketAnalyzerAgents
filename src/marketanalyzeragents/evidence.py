@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
@@ -18,41 +18,6 @@ class EvidenceItem:
     matched_tickers: list[str] = field(default_factory=list)
     evidence_level: str = "summary"
     display_url: str = ""
-
-
-@dataclass
-class SourceCoverage:
-    name: str
-    category: str
-    status: str
-    item_count: int = 0
-    detail: str = ""
-
-
-@dataclass
-class EvidencePack:
-    retrieved_at: str
-    lookback_hours: int
-    items: list[EvidenceItem] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-    window_start: str = ""
-    window_end: str = ""
-    window_mode: str = "rolling_hours"
-    timezone: str = "UTC"
-    coverage: list[SourceCoverage] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "retrieved_at": self.retrieved_at,
-            "lookback_hours": self.lookback_hours,
-            "window_start": self.window_start,
-            "window_end": self.window_end,
-            "window_mode": self.window_mode,
-            "timezone": self.timezone,
-            "items": [asdict(item) for item in self.items],
-            "errors": list(self.errors),
-            "coverage": [asdict(entry) for entry in self.coverage],
-        }
 
 
 def configured_us_holdings(sources: Mapping[str, Any]) -> list[dict[str, Any]]:

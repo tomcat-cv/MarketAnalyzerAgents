@@ -1,6 +1,7 @@
 import unittest
 
 from marketanalyzeragents.evidence import EvidenceItem, configured_portfolio_holdings, dedupe_evidence
+from marketanalyzeragents.social_adapters import collect_social_posts
 
 
 def evidence(url="https://official.example/release") -> EvidenceItem:
@@ -45,6 +46,23 @@ class EvidenceContractTests(unittest.TestCase):
             10,
         )
         self.assertEqual([item.id for item in items], ["EVID-001", "EVID-002"])
+
+    def test_disabled_social_adapter_warns_without_fabricating_posts(self) -> None:
+        posts, warnings = collect_social_posts(
+            {
+                "social_sources": {
+                    "x": {
+                        "enabled": True,
+                        "adapter": "disabled",
+                        "keywords": ["NVDA"],
+                        "accounts": ["analyst"],
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(posts, [])
+        self.assertTrue(warnings)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol, Sequence
 
-from .collectors import CollectionError, HttpClient
+from .collectors_core import CollectionError, HttpClient
 
 
 @dataclass(frozen=True)

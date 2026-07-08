@@ -100,6 +100,38 @@ class MarketCalendarTests(unittest.TestCase):
         self.assertEqual(open_status.state, "open")
         self.assertEqual(closed_status.state, "post_market")
 
+    def test_repo_calendars_include_2026_market_holidays(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        a_share_calendar = calendar_from_settings(
+            {
+                "calendar": {
+                    "provider": "file",
+                    "path": "config/calendars/a_share_2026.json",
+                    "strict": True,
+                }
+            },
+            root=root,
+        )
+        us_calendar = calendar_from_settings(
+            {
+                "calendar": {
+                    "provider": "file",
+                    "path": "config/calendars/us_equities_2026.json",
+                    "strict": True,
+                }
+            },
+            root=root,
+        )
+
+        self.assertEqual(
+            market_status("a_share", datetime(2026, 10, 1, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")), calendar=a_share_calendar).state,
+            "closed",
+        )
+        self.assertEqual(
+            market_status("us_equities", datetime(2026, 7, 3, 22, 0, tzinfo=ZoneInfo("Asia/Shanghai")), calendar=us_calendar).state,
+            "closed",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

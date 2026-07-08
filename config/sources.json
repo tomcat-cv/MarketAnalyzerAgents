@@ -66,6 +66,7 @@
   "social_sources": {
     "x": {
       "enabled": true,
+      "adapter": "disabled",
       "keywords": [
         "NVDA",
         "AI capex"
@@ -75,6 +76,7 @@
     },
     "xiaohongshu": {
       "enabled": true,
+      "adapter": "disabled",
       "keywords": [
         "英伟达",
         "AI 算力"

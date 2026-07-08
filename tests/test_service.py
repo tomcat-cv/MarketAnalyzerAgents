@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from marketanalyzeragents.analysis_system import _open_market_suggestion_interval
 from marketanalyzeragents.cli import build_parser, command_report, command_suggest
 
 
@@ -83,6 +84,20 @@ class ServiceCommandTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         generate.assert_called_once_with(Path("/tmp/project"), backend="dry-run")
+
+    def test_open_market_suggestion_interval_uses_active_market_settings(self) -> None:
+        interval = _open_market_suggestion_interval(
+            {
+                "intraday_suggestion_interval_seconds": 1800,
+                "markets": {
+                    "a_share": {"poll_interval_seconds": 900},
+                    "us_equities": {"poll_interval_seconds": 1200},
+                },
+            },
+            {"a_share": {"state": "closed"}, "us_equities": {"state": "open"}},
+        )
+
+        self.assertEqual(interval, 1200)
 
 
 if __name__ == "__main__":

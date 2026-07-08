@@ -36,6 +36,13 @@ marketanalyzeragents service
 - `config/sources.json`：持仓、关注 Topic、官方来源、社媒来源、恐惧贪婪指数。
 - `config/markets/a_share.json`：A 股市场日历和轮询配置。
 - `config/markets/us_equities.json`：美股市场日历和轮询配置。
+- `config/calendars/a_share_2026.json`：A 股 2026 休市文件日历。
+- `config/calendars/us_equities_2026.json`：美股 2026 休市和提前收盘文件日历。
+
+社媒来源通过 `social_sources.*.adapter` 接入。当前内置 `manual` 和 `disabled`：
+
+- `manual`：读取配置中的 `manual_posts`，适合用户手工录入或外部授权采集程序写入。
+- `disabled`：不采集平台数据；配置了关键词或账号时只产生 warning，不伪造不可获得的数据。
 
 ## 运行数据
 
