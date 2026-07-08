@@ -35,7 +35,7 @@ class TradingCalendar:
             return False
         if text in self.open_dates:
             return True
-        if self.strict:
+        if self.strict and self.open_dates:
             return False
         return day.weekday() < 5
 

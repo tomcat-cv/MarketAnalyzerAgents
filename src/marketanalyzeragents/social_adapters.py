@@ -74,7 +74,7 @@ class ManualSocialAdapter:
 class DisabledSocialAdapter:
     def collect(self, platform: str, config: Mapping[str, Any]) -> tuple[list[SocialPost], list[str]]:
         if config.get("accounts") or config.get("keywords"):
-            return [], [f"{platform} 已配置账号/关键词，但未启用可用采集适配器；未伪造平台数据。"]
+            return [], [f"{platform} 已配置账号/关键词，但未配置可用采集方式；未伪造平台数据。"]
         return [], []
 
 

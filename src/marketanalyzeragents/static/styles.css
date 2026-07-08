@@ -42,6 +42,7 @@
     }
     h1 { margin: 0; font-size: 28px; line-height: 1; letter-spacing: 0; }
     h2 { margin: 0; font-size: 15px; letter-spacing: 0; }
+    h3 { margin: 0; font-size: 13px; letter-spacing: 0; }
     .subtle { color: var(--muted); font-size: 13px; }
     .tabs {
       display: flex;
@@ -122,6 +123,13 @@
     tr:last-child td { border-bottom: 0; }
     .ticker { font-size: 15px; font-weight: 800; color: var(--black); }
     .card-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px; }
+    .card-list.single { grid-template-columns: 1fr; padding: 10px 0 0; }
+    .tracking-columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      padding: 12px;
+    }
     .holding-card, .topic-card {
       border: 1px solid var(--line);
       background: #fbfdfc;
@@ -130,6 +138,7 @@
       min-width: 0;
       box-shadow: var(--soft-shadow);
     }
+    .auto-topic { border-style: dashed; }
     .card-top {
       display: flex;
       justify-content: space-between;
@@ -197,6 +206,41 @@
     button.ghost { border-color: var(--line); background: transparent; color: var(--teal); padding: 5px 8px; }
     .inline-actions { display: flex; gap: 6px; flex-wrap: wrap; }
     .alerts { display: grid; gap: 10px; padding: 12px; }
+    .sentiment-summary {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 12px;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfdfc;
+    }
+    .sentiment-summary span, .sentiment-summary small { display: block; color: var(--muted); font-size: 12px; }
+    .sentiment-summary strong { display: block; margin: 3px 0; font-size: 30px; line-height: 1; }
+    .sentiment-summary p { margin: 0; line-height: 1.45; font-size: 13px; }
+    .sentiment-components { display: grid; gap: 1px; background: var(--line); }
+    .sentiment-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(92px, .35fr);
+      gap: 8px;
+      padding: 10px 12px;
+      background: #fbfdfc;
+    }
+    .sentiment-row > div:first-child span,
+    .sentiment-value span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 3px;
+    }
+    .sentiment-row p {
+      grid-column: 1 / -1;
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .sentiment-value { text-align: right; }
+    .sentiment-row.unavailable { color: var(--muted); }
     .alert {
       border-left: 4px solid var(--blue);
       background: #fbfdfc;
@@ -222,6 +266,7 @@
     }
     .brief-row:hover { background: #edf6f2; }
     .empty { padding: 18px 14px; color: var(--muted); }
+    .empty.compact { padding: 12px 0; }
     .toast {
       position: fixed;
       right: 20px;
@@ -237,6 +282,9 @@
     [hidden] { display: none !important; }
     @media (max-width: 960px) {
       header, .home-grid, .config-grid, .overview-grid, .card-list { grid-template-columns: 1fr; }
+      .tracking-columns { grid-template-columns: 1fr; }
+      .sentiment-summary, .sentiment-row { grid-template-columns: 1fr; }
+      .sentiment-value { text-align: left; }
       .status-strip, .form-grid { grid-template-columns: 1fr; }
       .tabs { overflow-x: auto; }
     }

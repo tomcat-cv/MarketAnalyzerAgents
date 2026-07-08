@@ -40,6 +40,9 @@
     "history_range": "1mo",
     "history_interval": "1d"
   },
+  "market_sentiment": {
+    "enabled": true
+  },
   "collectors": {
     "user_agent": "market-analyzer-agents/0.1 research@example.com",
     "timeout_seconds": 30,

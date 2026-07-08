@@ -69,25 +69,30 @@
       "adapter": "disabled",
       "keywords": [
         "NVDA",
-        "AI capex"
+        "NVIDIA",
+        "AI 算力",
+        "数据中心",
+        "AI 基础设施",
+        "AI capex",
+        "GPU",
+        "data center"
       ],
-      "accounts": [],
-      "manual_posts": []
+      "accounts": []
     },
     "xiaohongshu": {
       "enabled": true,
       "adapter": "disabled",
       "keywords": [
-        "英伟达",
-        "AI 算力"
+        "NVDA",
+        "NVIDIA",
+        "AI 算力",
+        "数据中心",
+        "AI 基础设施",
+        "AI capex",
+        "GPU",
+        "data center"
       ],
-      "accounts": [],
-      "manual_posts": []
+      "accounts": []
     }
-  },
-  "fear_greed": {
-    "value": "",
-    "label": "",
-    "source_url": "https://www.cnn.com/markets/fear-and-greed"
   }
 }

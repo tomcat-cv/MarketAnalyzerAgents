@@ -54,18 +54,10 @@ class WebCoreTests(unittest.TestCase):
                     "social_sources": {
                         "x": {
                             "enabled": True,
-                            "keywords": ["NVDA"],
                             "accounts": ["analyst"],
-                            "manual_posts": [
-                                {
-                                    "author": "analyst",
-                                    "text": "NVDA AI capex looks positive",
-                                    "published_at": "2026-07-08T08:00:00+08:00",
-                                }
-                            ],
+                            "adapter": "disabled",
                         }
                     },
-                    "fear_greed": {"value": "61", "label": "Greed"},
                 }
             ),
             encoding="utf-8",
@@ -76,10 +68,19 @@ class WebCoreTests(unittest.TestCase):
             root = Path(tmp)
             self._write_project(root)
 
-            state = dashboard_state(root)
+            with patch(
+                "marketanalyzeragents.analysis_system.current_market_sentiment",
+                return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
+            ):
+                state = dashboard_state(root)
 
         self.assertEqual(state["holdings"][0]["ticker"], "NVDA")
-        self.assertEqual(state["focus_topics"][0]["keywords"], ["GPU"])
+        self.assertEqual(state["focus_topics"][0]["source"], "holding")
+        self.assertEqual(state["custom_focus_topics"][0]["keywords"], ["GPU"])
+        self.assertIn("NVDA", state["social_keywords"])
+        self.assertIn("GPU", state["social_keywords"])
+        self.assertEqual(state["market_sentiment"]["value"], "61")
+        self.assertNotIn("fear_greed", state)
         self.assertEqual(state["report_schedule"], ["08:00", "14:00", "20:00"])
         self.assertEqual(state["configuration"]["backend"], "dry-run")
         self.assertEqual(state["social_sources"]["x"]["accounts"], ["analyst"])
@@ -118,8 +119,7 @@ class WebCoreTests(unittest.TestCase):
                 root,
                 {
                     "official_sources": [{"type": "rss", "enabled": True, "name": "Fed", "url": "https://example.com/rss"}],
-                    "social_sources": {"x": {"enabled": True, "keywords": ["NVDA"], "accounts": []}},
-                    "fear_greed": {"value": "35", "label": "Fear", "source_url": "https://example.com/fear"},
+                    "social_sources": {"x": {"enabled": True, "accounts": ["macro_analyst"]}},
                 },
             )
 
@@ -127,8 +127,11 @@ class WebCoreTests(unittest.TestCase):
 
         self.assertEqual(sources["focus_topics"], [{"id": "energy", "name": "能源", "keywords": ["power", "utility"]}])
         self.assertEqual(sources["official_sources"][0]["name"], "Fed")
-        self.assertEqual(sources["fear_greed"]["label"], "Fear")
-        self.assertEqual(sources["fear_greed"]["source_url"], "https://example.com/fear")
+        self.assertEqual(sources["social_sources"]["x"]["accounts"], ["macro_analyst"])
+        self.assertNotIn("manual_posts", sources["social_sources"]["x"])
+        self.assertIn("NVDA", sources["social_sources"]["x"]["keywords"])
+        self.assertIn("power", sources["social_sources"]["x"]["keywords"])
+        self.assertNotIn("fear_greed", sources)
 
     def test_model_configuration_updates_settings_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,6 +145,8 @@ class WebCoreTests(unittest.TestCase):
                     "model": "gpt-test",
                     "openai_model": "gpt-test",
                     "zhipu_model": "glm-test",
+                    "openai_api_key": "sk-test",
+                    "zhipu_api_key": "zhipu-test",
                     "advice_backend": "dry-run",
                     "debate_rounds": "2",
                     "report_schedule": "09:00,15:30",
@@ -153,6 +158,10 @@ class WebCoreTests(unittest.TestCase):
         self.assertEqual(config["backend"], "openai")
         self.assertEqual(settings["openai"]["model"], "gpt-test")
         self.assertEqual(settings["zhipu"]["model"], "glm-test")
+        self.assertEqual(settings["openai"]["api_key"], "sk-test")
+        self.assertEqual(settings["zhipu"]["api_key"], "zhipu-test")
+        self.assertTrue(config["openai_api_key_set"])
+        self.assertTrue(config["zhipu_api_key_set"])
         self.assertEqual(settings["intraday_agents"]["advice_backend"], "dry-run")
         self.assertEqual(settings["report_schedule"], ["09:00", "15:30"])
         self.assertEqual(settings["intraday_suggestion_interval_seconds"], 600)
@@ -161,7 +170,10 @@ class WebCoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write_project(root)
-            with patch("marketanalyzeragents.analysis_system._collect_official", return_value=([], [])):
+            with patch("marketanalyzeragents.analysis_system._collect_official", return_value=([], [])), patch(
+                "marketanalyzeragents.analysis_system.current_market_sentiment",
+                return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
+            ):
                 report = generate_market_report(root, slot="08:00", backend="dry-run")
                 html_exists = Path(report["html_path"]).exists()
                 state = dashboard_state(root)

@@ -16,6 +16,7 @@ from .config import load_json, load_settings, resolve_path
 from .evidence import EvidenceItem, configured_portfolio_holdings, dedupe_evidence
 from .intraday import MarketDataProviderError, fetch_market_data
 from .market_calendar import calendar_from_settings, market_status
+from .market_sentiment import collect_market_sentiment
 from .openai_runner import run_openai
 from .portfolio_snapshots import normalize_holding
 from .social_adapters import SocialPost, collect_social_posts
@@ -61,6 +62,25 @@ def read_sources(root: Path, settings: Mapping[str, Any]) -> dict[str, Any]:
 def configured_topics(sources: Mapping[str, Any]) -> list[dict[str, Any]]:
     topics: list[dict[str, Any]] = []
     seen: set[str] = set()
+    for holding in configured_portfolio_holdings(sources):
+        ticker = str(holding.get("ticker", "")).strip()
+        if not ticker:
+            continue
+        topic_id = f"holding:{str(holding.get('market', '')).strip()}:{ticker.upper()}"
+        if topic_id in seen:
+            continue
+        keywords = _holding_keywords(holding)
+        topics.append(
+            {
+                "id": topic_id,
+                "name": str(holding.get("company") or ticker).strip(),
+                "keywords": keywords,
+                "source": "holding",
+                "market": str(holding.get("market", "")),
+                "ticker": ticker,
+            }
+        )
+        seen.add(topic_id)
     raw_topics = sources.get("focus_topics", [])
     if not isinstance(raw_topics, list):
         return topics
@@ -81,6 +101,7 @@ def configured_topics(sources: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "id": topic_id,
                 "name": str(item.get("name", topic_id)).strip() or topic_id,
                 "keywords": keywords,
+                "source": "custom",
             }
         )
     return topics
@@ -106,6 +127,62 @@ def _string_list(value: Any) -> list[str]:
     else:
         return []
     return [item.strip() for item in pieces if item.strip()]
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = str(value).strip()
+        key = item.casefold()
+        if item and key not in seen:
+            result.append(item)
+            seen.add(key)
+    return result
+
+
+def _holding_keywords(holding: Mapping[str, Any]) -> list[str]:
+    values = [
+        str(holding.get("ticker", "")),
+        str(holding.get("symbol", "")),
+        str(holding.get("company", "")),
+        *_string_list(holding.get("themes", [])),
+    ]
+    return _dedupe_strings(values)
+
+
+def configured_social_keywords(sources: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for holding in configured_portfolio_holdings(sources):
+        values.extend(_holding_keywords(holding))
+    for topic in configured_topics(sources):
+        values.append(str(topic.get("name", "")))
+        values.extend(_string_list(topic.get("keywords", [])))
+    return _dedupe_strings(values)
+
+
+def _normalize_social_sources(payload_value: Any, existing_value: Any, sources: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    payload_social = payload_value if isinstance(payload_value, Mapping) else {}
+    existing_social = existing_value if isinstance(existing_value, Mapping) else {}
+    keywords = configured_social_keywords(sources)
+    result: dict[str, dict[str, Any]] = {}
+    for platform in ("x", "xiaohongshu"):
+        incoming = payload_social.get(platform, {})
+        existing = existing_social.get(platform, {})
+        if not isinstance(incoming, Mapping):
+            incoming = {}
+        if not isinstance(existing, Mapping):
+            existing = {}
+        adapter = str(incoming.get("adapter") or existing.get("adapter") or "disabled").strip()
+        if adapter == "manual":
+            adapter = "disabled"
+        result[platform] = {
+            "enabled": bool(incoming.get("enabled", existing.get("enabled", True))),
+            "adapter": adapter or "disabled",
+            "accounts": _string_list(incoming.get("accounts", existing.get("accounts", []))),
+            "keywords": keywords,
+        }
+    return result
 
 
 def _time_list(value: Any) -> list[str]:
@@ -140,6 +217,8 @@ def _model_configuration(settings: Mapping[str, Any]) -> dict[str, Any]:
         "model": str(active.get("model") or settings.get("model", "")),
         "openai_model": str(openai_settings.get("model", "")),
         "zhipu_model": str(zhipu_settings.get("model", "")),
+        "openai_api_key_set": bool(str(openai_settings.get("api_key", "")).strip()),
+        "zhipu_api_key_set": bool(str(zhipu_settings.get("api_key", "")).strip()),
         "advice_backend": str(intraday.get("advice_backend", backend)),
         "debate_rounds": int(intraday.get("debate_rounds", 1)),
         "report_schedule": list(settings.get("report_schedule", REPORT_SCHEDULES)),
@@ -165,11 +244,17 @@ def update_model_configuration(root: Path, payload: Mapping[str, Any]) -> dict[s
         settings["intraday_agents"] = {}
     openai_model = str(payload.get("openai_model", "")).strip()
     zhipu_model = str(payload.get("zhipu_model", "")).strip()
+    openai_api_key = str(payload.get("openai_api_key", "")).strip()
+    zhipu_api_key = str(payload.get("zhipu_api_key", "")).strip()
     model = str(payload.get("model", "")).strip()
     if openai_model:
         settings["openai"]["model"] = openai_model
     if zhipu_model:
         settings["zhipu"]["model"] = zhipu_model
+    if openai_api_key and openai_api_key != "__KEEP__":
+        settings["openai"]["api_key"] = openai_api_key
+    if zhipu_api_key and zhipu_api_key != "__KEEP__":
+        settings["zhipu"]["api_key"] = zhipu_api_key
     if backend == "openai" and (model or openai_model):
         settings["openai"]["model"] = model or openai_model
         settings["model"] = model or openai_model
@@ -281,17 +366,16 @@ def update_source_configuration(root: Path, payload: Mapping[str, Any]) -> dict[
     settings = load_settings(root)
     sources = read_sources(root, settings)
     sources["official_sources"] = payload.get("official_sources", [])
-    sources["social_sources"] = payload.get("social_sources", {})
-    fear_greed = dict(payload.get("fear_greed", {})) if isinstance(payload.get("fear_greed", {}), Mapping) else {}
-    existing_fear_greed = sources.get("fear_greed", {})
-    if isinstance(existing_fear_greed, Mapping) and "source_url" not in fear_greed:
-        fear_greed["source_url"] = existing_fear_greed.get("source_url", "")
-    sources["fear_greed"] = fear_greed
+    sources["social_sources"] = _normalize_social_sources(
+        payload.get("social_sources", {}),
+        sources.get("social_sources", {}),
+        sources,
+    )
+    sources.pop("fear_greed", None)
     write_sources(root, settings, sources)
     return {
         "official_sources": sources["official_sources"],
         "social_sources": sources["social_sources"],
-        "fear_greed": sources["fear_greed"],
     }
 
 
@@ -345,9 +429,42 @@ def _collect_official(root: Path, settings: Mapping[str, Any], sources: Mapping[
     ], warnings
 
 
+def _collector_client(settings: Mapping[str, Any]) -> HttpClient:
+    collector_settings = settings.get("collectors", {})
+    if not isinstance(collector_settings, Mapping):
+        collector_settings = {}
+    return HttpClient(
+        str(collector_settings.get("user_agent", "market-analyzer-agents/0.1")),
+        int(collector_settings.get("timeout_seconds", 30)),
+        int(collector_settings.get("max_retries", 2)),
+        float(collector_settings.get("retry_backoff_seconds", 1.0)),
+    )
+
+
+def current_market_sentiment(settings: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    try:
+        value = collect_market_sentiment(_collector_client(settings), settings.get("market_sentiment", {}))
+        value["generated_at"] = beijing_now(settings).isoformat(timespec="seconds")
+        return value, []
+    except Exception as exc:
+        return {
+            "value": "",
+            "label": "暂不可用",
+            "status": "error",
+            "error": str(exc),
+            "components": [],
+        }, [f"market_sentiment: {exc}"]
+
+
 def collect_content(root: Path, settings: Mapping[str, Any], sources: Mapping[str, Any]) -> ContentPack:
     official, official_warnings = _collect_official(root, settings, sources)
-    social_posts, social_warnings = collect_social_posts(sources)
+    social_sources = _normalize_social_sources(
+        sources.get("social_sources", {}),
+        sources.get("social_sources", {}),
+        sources,
+    )
+    collection_sources = {**dict(sources), "social_sources": social_sources}
+    social_posts, social_warnings = collect_social_posts(collection_sources)
     return ContentPack(
         official=official,
         social_posts=social_posts,
@@ -390,10 +507,10 @@ def _call_model(settings: Mapping[str, Any], *, system: str, user: str, backend:
 
 
 def _report_fallback(pack: ContentPack, sources: Mapping[str, Any], run_at: datetime) -> str:
-    fear_greed = sources.get("fear_greed", {})
-    fear_text = ""
-    if isinstance(fear_greed, Mapping) and fear_greed.get("value") not in (None, ""):
-        fear_text = f"{fear_greed.get('value')} / {fear_greed.get('label', '')}".strip()
+    market_sentiment = sources.get("market_sentiment", {})
+    sentiment_text = ""
+    if isinstance(market_sentiment, Mapping) and market_sentiment.get("value") not in (None, ""):
+        sentiment_text = f"{market_sentiment.get('value')} / {market_sentiment.get('label', '')}".strip()
     official_lines = [
         f"- [{item.title}]({item.url})：{item.summary[:180]}"
         for item in pack.official[:8]
@@ -416,10 +533,10 @@ def _report_fallback(pack: ContentPack, sources: Mapping[str, Any], run_at: date
             "",
             "## 社媒情绪",
             f"- 帖子统计：积极 {sentiment['counts']['positive']}，消极 {sentiment['counts']['negative']}，中性 {sentiment['counts']['neutral']}；主导情绪 {sentiment['dominant']}。",
-            *(author_lines or ["- 已保留博主分析区；配置账号后由采集适配器写入最新帖子。"]),
+            *(author_lines or ["- 已保留博主分析区；配置账号后由社媒采集模块写入最新帖子。"]),
             "",
-            "## 恐惧贪婪指数",
-            f"- {fear_text or '未配置最新指数值；可在来源配置中更新。'}",
+            "## 市场情绪",
+            f"- {sentiment_text or '市场情绪数据暂不可用；请检查行情、CBOE 或 FRED 数据源。'}",
         ]
     )
 
@@ -430,13 +547,15 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
     run_at = beijing_now(settings)
     slot_value = slot or run_at.strftime("%H:%M")
     pack = collect_content(root, settings, sources)
+    market_sentiment, sentiment_warnings = current_market_sentiment(settings)
+    pack.source_warnings.extend(sentiment_warnings)
     payload = {
         "holdings": configured_portfolio_holdings(sources),
         "topics": configured_topics(sources),
         "official": [item.__dict__ for item in pack.official],
         "social": [item.__dict__ for item in pack.social_posts],
         "social_summary": social_summary(pack.social_posts),
-        "fear_greed": sources.get("fear_greed", {}),
+        "market_sentiment": market_sentiment,
         "warnings": pack.source_warnings,
     }
     system = (
@@ -446,10 +565,15 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
     )
     user = json.dumps(payload, ensure_ascii=False, indent=2)
     try:
-        markdown = _call_model(settings, system=system, user=user, backend=backend) or _report_fallback(pack, sources, run_at)
+        markdown = _call_model(
+            settings,
+            system=system,
+            user=user,
+            backend=backend,
+        ) or _report_fallback(pack, {**dict(sources), "market_sentiment": market_sentiment}, run_at)
     except Exception as exc:
         pack.source_warnings.append(f"model: {exc}")
-        markdown = _report_fallback(pack, sources, run_at)
+        markdown = _report_fallback(pack, {**dict(sources), "market_sentiment": market_sentiment}, run_at)
     report_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{slot_value.replace(':', '')}"
     json_path = analysis_dir(root, settings, "reports") / f"{report_id}.json"
     html_path = analysis_dir(root, settings, "reports") / f"{report_id}.html"
@@ -508,13 +632,15 @@ def generate_intraday_suggestion(root: Path, *, backend: str | None = None) -> d
             }
         )
     pack = collect_content(root, settings, sources)
+    market_sentiment, sentiment_warnings = current_market_sentiment(settings)
+    pack.source_warnings.extend(sentiment_warnings)
     payload = {
         "holdings": holdings,
         "quotes": quote_rows,
         "quote_errors": quote_errors,
         "official": [item.__dict__ for item in pack.official[:12]],
         "social_summary": social_summary(pack.social_posts),
-        "fear_greed": sources.get("fear_greed", {}),
+        "market_sentiment": market_sentiment,
         "debate_rounds": debate_rounds,
     }
     system = (
@@ -600,16 +726,22 @@ def dashboard_state(root: Path) -> dict[str, Any]:
     suggestions = list_suggestions(root, settings)
     social = sources.get("social_sources", {})
     official = _configured_official_sources(sources)
+    social_sources = _normalize_social_sources(social, social, sources)
+    topics = configured_topics(sources)
+    market_sentiment, sentiment_warnings = current_market_sentiment(settings)
     return {
         "generated_at": beijing_now(settings).isoformat(timespec="seconds"),
         "display_timezone": str(settings.get("timezone", "Asia/Shanghai")),
         "markets": markets,
         "holdings": configured_portfolio_holdings(sources),
-        "focus_topics": configured_topics(sources),
+        "focus_topics": topics,
+        "custom_focus_topics": [item for item in topics if item.get("source") != "holding"],
         "configuration": _model_configuration(settings),
         "official_sources": official,
-        "social_sources": social if isinstance(social, Mapping) else {},
-        "fear_greed": sources.get("fear_greed", {}),
+        "social_sources": social_sources,
+        "social_keywords": configured_social_keywords(sources),
+        "market_sentiment": market_sentiment,
+        "warnings": sentiment_warnings,
         "latest_report": reports[0] if reports else None,
         "reports": reports,
         "suggestions": suggestions,

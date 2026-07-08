@@ -87,12 +87,45 @@ function renderOverview(data) {
   const reports = data.reports || [];
   const suggestions = data.suggestions || [];
   const social = data.social_sources || {};
+  const sentiment = data.market_sentiment || {};
   const sourceCount = (data.official_sources || []).length + Object.values(social).filter(item => item && item.enabled !== false).length;
   document.getElementById("overview").innerHTML = `
     <div class="metric"><span>定时报告</span><strong>${esc((data.report_schedule || []).join(" / "))}</strong><small>北京时间</small></div>
     <div class="metric"><span>持仓</span><strong>${esc((data.holdings || []).length)}</strong><small>A 股与美股分开处理</small></div>
-    <div class="metric"><span>来源</span><strong>${esc(sourceCount)}</strong><small>官方资讯与社媒分层</small></div>
+    <div class="metric"><span>市场情绪</span><strong>${esc(sentiment.value || "--")}</strong><small>${esc(sentiment.label || "自动刷新")}</small></div>
     <div class="metric"><span>历史报告</span><strong>${esc(reports.length)}</strong><small>盘中建议 ${suggestions.length} 条</small></div>
+  `;
+}
+
+function renderMarketSentiment(sentiment) {
+  const root = document.getElementById("market-sentiment");
+  const status = document.getElementById("sentiment-status");
+  const components = (sentiment || {}).components || [];
+  status.textContent = sentiment?.status ? `${sentiment.status} / 可用权重 ${Math.round((sentiment.available_weight || 0) * 100)}%` : "";
+  if (!sentiment || !components.length) {
+    root.innerHTML = `<div class="empty">市场情绪数据暂不可用。</div>`;
+    return;
+  }
+  root.innerHTML = `
+    <div class="sentiment-summary">
+      <div><span>综合分</span><strong>${esc(sentiment.value || "--")}</strong><small>${esc(sentiment.label || "")}</small></div>
+      <p>${esc(sentiment.summary || "")}</p>
+    </div>
+    <div class="sentiment-components">
+      ${components.map(item => `
+        <article class="sentiment-row ${item.status === "ok" ? "" : "unavailable"}">
+          <div>
+            <strong>${esc(item.name)}</strong>
+            <span>${esc(item.group)} · 权重 ${esc(Math.round((item.weight || 0) * 100))}%</span>
+          </div>
+          <div class="sentiment-value">
+            <strong>${item.status === "ok" ? esc(`${item.value ?? ""}${item.unit ? " " + item.unit : ""}`) : "不可用"}</strong>
+            <span>${item.status === "ok" ? `分项 ${esc(item.score ?? "--")}` : esc(item.error || "")}</span>
+          </div>
+          <p>${esc(item.analysis || item.source || "")}</p>
+        </article>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -121,22 +154,34 @@ function renderSuggestions(items) {
 }
 
 function renderTracking(data) {
-  document.getElementById("tracking-count").textContent = `${(data.holdings || []).length} 持仓 / ${(data.focus_topics || []).length} Topic`;
+  const holdings = data.holdings || [];
+  const topics = data.focus_topics || [];
+  document.getElementById("tracking-count").textContent = `${holdings.length} 持仓 / ${topics.length} Topic`;
   document.getElementById("tracking").innerHTML = `
-    <div class="card-list">
-      ${(data.holdings || []).map(item => `
-        <article class="holding-card">
-          <div class="card-top"><div><div class="ticker">${esc(item.ticker)}</div><div class="subtle">${esc(item.company || "")}</div></div><span class="market-badge">${marketLabel(item.market)}</span></div>
-          <div>${(item.themes || []).map(theme => `<span class="pill">${esc(theme)}</span>`).join("")}</div>
-        </article>
-      `).join("")}
-      ${(data.focus_topics || []).map(item => `
-        <article class="topic-card">
-          <div class="ticker">${esc(item.name)}</div>
-          <div class="subtle">${esc(item.id)}</div>
-          <div>${(item.keywords || []).map(word => `<span class="pill">${esc(word)}</span>`).join("")}</div>
-        </article>
-      `).join("")}
+    <div class="tracking-columns">
+      <div>
+        <h3>用户持仓</h3>
+        <div class="card-list single">
+          ${holdings.length ? holdings.map(item => `
+            <article class="holding-card">
+              <div class="card-top"><div><div class="ticker">${esc(item.ticker)}</div><div class="subtle">${esc(item.company || "")}</div></div><span class="market-badge">${marketLabel(item.market)}</span></div>
+              <div>${(item.themes || []).map(theme => `<span class="pill">${esc(theme)}</span>`).join("")}</div>
+            </article>
+          `).join("") : `<div class="empty compact">还没有配置持仓。</div>`}
+        </div>
+      </div>
+      <div>
+        <h3>关注 Topic</h3>
+        <div class="card-list single">
+          ${topics.length ? topics.map(item => `
+            <article class="topic-card ${item.source === "holding" ? "auto-topic" : ""}">
+              <div class="ticker">${esc(item.name)}</div>
+              <div class="subtle">${item.source === "holding" ? `来自持仓 ${esc(item.ticker || "")}` : esc(item.id)}</div>
+              <div>${(item.keywords || []).map(word => `<span class="pill">${esc(word)}</span>`).join("")}</div>
+            </article>
+          `).join("") : `<div class="empty compact">还没有关注 Topic。</div>`}
+        </div>
+      </div>
     </div>`;
 }
 
@@ -202,34 +247,6 @@ function lines(value) {
   return String(value || "").split(/\n|,|，/).map(item => item.trim()).filter(Boolean);
 }
 
-function socialAdapter(config) {
-  if (config?.adapter) return config.adapter;
-  return (config?.manual_posts || []).length ? "manual" : "disabled";
-}
-
-function formatManualPosts(posts) {
-  return (posts || []).map(item => [
-    item.author || "",
-    item.published_at || "",
-    item.sentiment || "",
-    item.url || "",
-    item.text || ""
-  ].join(" | ")).join("\n");
-}
-
-function parseManualPosts(value) {
-  return String(value || "").split(/\n/).map(line => line.trim()).filter(Boolean).map(line => {
-    const parts = line.split("|").map(part => part.trim());
-    return {
-      author: parts[0] || "",
-      published_at: parts[1] || "",
-      sentiment: parts[2] || "",
-      url: parts[3] || "",
-      text: parts.slice(4).join(" | ").trim()
-    };
-  }).filter(item => item.text);
-}
-
 function renderConfig(data) {
   if (state.configDirty) return;
   const model = document.getElementById("model-form");
@@ -238,6 +255,10 @@ function renderConfig(data) {
   model.model.value = config.model || "";
   model.zhipu_model.value = config.zhipu_model || "";
   model.openai_model.value = config.openai_model || "";
+  model.zhipu_api_key.value = "";
+  model.zhipu_api_key.placeholder = config.zhipu_api_key_set ? "已保存，留空不修改" : "请输入智谱 API Key";
+  model.openai_api_key.value = "";
+  model.openai_api_key.placeholder = config.openai_api_key_set ? "已保存，留空不修改" : "请输入 OpenAI API Key";
   model.advice_backend.value = config.advice_backend || "zhipu";
   model.debate_rounds.value = config.debate_rounds || 1;
   model.report_schedule.value = (config.report_schedule || data.report_schedule || []).join(", ");
@@ -246,17 +267,9 @@ function renderConfig(data) {
   const source = document.getElementById("source-form");
   source.official_sources.value = (data.official_sources || []).map(item => `${item.name || ""} | ${item.url || ""} | ${(item.topics || []).join(", ")}`).join("\n");
   const social = data.social_sources || {};
-  source.x_keywords.value = ((social.x || {}).keywords || []).join("\n");
   source.x_accounts.value = ((social.x || {}).accounts || []).join("\n");
-  source.x_adapter.value = socialAdapter(social.x);
-  source.x_manual_posts.value = formatManualPosts((social.x || {}).manual_posts);
-  source.xiaohongshu_keywords.value = ((social.xiaohongshu || {}).keywords || []).join("\n");
   source.xiaohongshu_accounts.value = ((social.xiaohongshu || {}).accounts || []).join("\n");
-  source.xiaohongshu_adapter.value = socialAdapter(social.xiaohongshu);
-  source.xiaohongshu_manual_posts.value = formatManualPosts((social.xiaohongshu || {}).manual_posts);
-  source.fear_value.value = (data.fear_greed || {}).value || "";
-  source.fear_label.value = (data.fear_greed || {}).label || "";
-  source.fear_source_url.value = (data.fear_greed || {}).source_url || "";
+  source.social_keywords.value = (data.social_keywords || []).join("\n");
 }
 
 function render(data) {
@@ -264,12 +277,13 @@ function render(data) {
   document.getElementById("clock").textContent = `更新时间 ${formatTime(data.generated_at)} ${data.display_timezone}`;
   renderMarketStatus(data.markets);
   renderOverview(data);
+  renderMarketSentiment(data.market_sentiment);
   renderLatestReport(data.latest_report);
   renderSuggestions(data.suggestions || []);
   renderTracking(data);
   renderArchive(data.reports || []);
   renderHoldingConfig(data.holdings || []);
-  renderTopicConfig(data.focus_topics || []);
+  renderTopicConfig(data.custom_focus_topics || []);
   renderConfig(data);
 }
 
@@ -336,10 +350,9 @@ document.getElementById("source-form").addEventListener("submit", async event =>
   await postJson("/api/sources", {
     official_sources: official,
     social_sources: {
-      x: {enabled: true, adapter: form.get("x_adapter"), keywords: lines(form.get("x_keywords")), accounts: lines(form.get("x_accounts")), manual_posts: parseManualPosts(form.get("x_manual_posts"))},
-      xiaohongshu: {enabled: true, adapter: form.get("xiaohongshu_adapter"), keywords: lines(form.get("xiaohongshu_keywords")), accounts: lines(form.get("xiaohongshu_accounts")), manual_posts: parseManualPosts(form.get("xiaohongshu_manual_posts"))}
-    },
-    fear_greed: {value: form.get("fear_value"), label: form.get("fear_label"), source_url: form.get("fear_source_url")}
+      x: {enabled: true, accounts: lines(form.get("x_accounts"))},
+      xiaohongshu: {enabled: true, accounts: lines(form.get("xiaohongshu_accounts"))}
+    }
   });
   state.configDirty = false;
   toast("来源配置已保存");

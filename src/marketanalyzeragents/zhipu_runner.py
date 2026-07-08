@@ -112,17 +112,20 @@ def run_zhipu(
     user: str,
     model_override: str | None = None,
 ) -> Tuple[ZhipuResult, Dict[str, Any]]:
+    zhipu_settings = settings.get("zhipu", {})
+    if not isinstance(zhipu_settings, Mapping):
+        zhipu_settings = {}
     api_key = (
         os.environ.get("ZHIPU_API_KEY", "").strip()
         or os.environ.get("ZAI_API_KEY", "").strip()
         or os.environ.get("BIGMODEL_API_KEY", "").strip()
+        or str(zhipu_settings.get("api_key", "")).strip()
     )
     if not api_key:
         raise ZhipuError(
             "ZHIPU_API_KEY is missing. Add it to .env, for example: ZHIPU_API_KEY=your-key"
         )
 
-    zhipu_settings = settings.get("zhipu", {})
     model = model_override or zhipu_settings.get("model") or settings.get("model") or "glm-5.1"
     payload = build_zhipu_payload(
         model=str(model),

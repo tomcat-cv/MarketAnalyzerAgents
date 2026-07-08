@@ -42,6 +42,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "history_range": "6mo",
         "history_interval": "1d",
     },
+    "market_sentiment": {
+        "enabled": True,
+    },
     "intraday_agents": {
         "advice_backend": "zhipu",
         "debate_rounds": 1,

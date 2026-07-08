@@ -33,7 +33,6 @@ class ServiceCommandTests(unittest.TestCase):
                     "focus_topics": [],
                     "official_sources": [],
                     "social_sources": {},
-                    "fear_greed": {},
                 }
             ),
             encoding="utf-8",
@@ -61,6 +60,9 @@ class ServiceCommandTests(unittest.TestCase):
             with patch("marketanalyzeragents.cli.find_project_root", return_value=root), patch(
                 "marketanalyzeragents.analysis_system._collect_official",
                 return_value=([], []),
+            ), patch(
+                "marketanalyzeragents.analysis_system.current_market_sentiment",
+                return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
             ), contextlib.redirect_stdout(io.StringIO()):
                 exit_code = command_report(args)
 

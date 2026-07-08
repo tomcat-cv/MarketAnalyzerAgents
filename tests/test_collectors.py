@@ -137,6 +137,5 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(warnings, [])
         self.assertEqual(len(items), 1)
 
-
 if __name__ == "__main__":
     unittest.main()

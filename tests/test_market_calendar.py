@@ -132,6 +132,23 @@ class MarketCalendarTests(unittest.TestCase):
             "closed",
         )
 
+    def test_repo_us_holiday_calendar_keeps_regular_weekdays_trading(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        us_calendar = calendar_from_settings(
+            {
+                "calendar": {
+                    "provider": "file",
+                    "path": "config/calendars/us_equities_2026.json",
+                    "strict": True,
+                }
+            },
+            root=root,
+        )
+
+        status = market_status("us_equities", datetime(2026, 7, 8, 17, 0, tzinfo=ZoneInfo("Asia/Shanghai")), calendar=us_calendar)
+
+        self.assertEqual(status.state, "pre_market")
+
 
 if __name__ == "__main__":
     unittest.main()

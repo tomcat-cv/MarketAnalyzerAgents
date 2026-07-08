@@ -111,14 +111,16 @@ def run_openai(
     user: str,
     model_override: str | None = None,
 ) -> Tuple[OpenAIResult, Dict[str, Any]]:
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    openai_settings = settings.get("openai", {})
+    if not isinstance(openai_settings, Mapping):
+        openai_settings = {}
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip() or str(openai_settings.get("api_key", "")).strip()
     if not api_key:
         raise OpenAIError(
             "OPENAI_API_KEY is missing. Copy .env.example to .env, fill it, "
             "or run with --backend dry-run."
         )
 
-    openai_settings = settings.get("openai", {})
     model = (
         model_override
         or os.environ.get("OPENAI_MODEL")

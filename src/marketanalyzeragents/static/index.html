@@ -33,6 +33,13 @@
         <aside>
           <section>
             <div class="section-head">
+              <h2>市场情绪</h2>
+              <span class="subtle" id="sentiment-status"></span>
+            </div>
+            <div id="market-sentiment"></div>
+          </section>
+          <section>
+            <div class="section-head">
               <h2>盘中操作建议</h2>
               <button class="secondary" id="run-suggestion" type="button">刷新建议</button>
             </div>
@@ -40,7 +47,7 @@
           </section>
           <section>
             <div class="section-head">
-              <h2>持仓与 Topic</h2>
+              <h2>持仓与关注 Topic</h2>
               <span class="subtle" id="tracking-count"></span>
             </div>
             <div id="tracking"></div>
@@ -62,13 +69,13 @@
         <div>
           <section>
             <div class="section-head">
-              <h2>分析模型</h2>
+              <h2>分析报告模型配置</h2>
               <span class="subtle">config/settings.json</span>
             </div>
             <form id="model-form">
               <div class="form-grid">
                 <div>
-                  <label>报告后端</label>
+                  <label>报告模型服务商</label>
                   <select name="backend">
                     <option value="zhipu">智谱</option>
                     <option value="openai">OpenAI</option>
@@ -88,7 +95,15 @@
                   <input name="openai_model" placeholder="gpt-5.4">
                 </div>
                 <div>
-                  <label>盘中建议后端</label>
+                  <label>智谱 API Key</label>
+                  <input name="zhipu_api_key" autocomplete="off" placeholder="已保存则留空">
+                </div>
+                <div>
+                  <label>OpenAI API Key</label>
+                  <input name="openai_api_key" autocomplete="off" placeholder="已保存则留空">
+                </div>
+                <div>
+                  <label>盘中建议模型服务商</label>
                   <select name="advice_backend">
                     <option value="zhipu">智谱</option>
                     <option value="openai">OpenAI</option>
@@ -165,54 +180,16 @@
                   <textarea name="official_sources"></textarea>
                 </div>
                 <div>
-                  <label>X 关键词</label>
-                  <textarea name="x_keywords"></textarea>
-                </div>
-                <div>
-                  <label>X 博主</label>
+                  <label>X 关注博主</label>
                   <textarea name="x_accounts"></textarea>
                 </div>
                 <div>
-                  <label>X 适配器</label>
-                  <select name="x_adapter">
-                    <option value="disabled">未启用</option>
-                    <option value="manual">手动帖子</option>
-                  </select>
-                </div>
-                <div class="wide">
-                  <label>X 手动帖子，每行：作者 | 发布时间 | 情绪 | URL | 正文</label>
-                  <textarea name="x_manual_posts"></textarea>
-                </div>
-                <div>
-                  <label>小红书关键词</label>
-                  <textarea name="xiaohongshu_keywords"></textarea>
-                </div>
-                <div>
-                  <label>小红书博主</label>
+                  <label>小红书关注博主</label>
                   <textarea name="xiaohongshu_accounts"></textarea>
                 </div>
-                <div>
-                  <label>小红书适配器</label>
-                  <select name="xiaohongshu_adapter">
-                    <option value="disabled">未启用</option>
-                    <option value="manual">手动帖子</option>
-                  </select>
-                </div>
                 <div class="wide">
-                  <label>小红书手动帖子，每行：作者 | 发布时间 | 情绪 | URL | 正文</label>
-                  <textarea name="xiaohongshu_manual_posts"></textarea>
-                </div>
-                <div>
-                  <label>恐惧贪婪指数</label>
-                  <input name="fear_value" placeholder="0-100">
-                </div>
-                <div>
-                  <label>指数标签</label>
-                  <input name="fear_label" placeholder="Fear / Neutral / Greed">
-                </div>
-                <div class="wide">
-                  <label>指数来源链接</label>
-                  <input name="fear_source_url" placeholder="https://www.cnn.com/markets/fear-and-greed">
+                  <label>自动关注关键词</label>
+                  <textarea name="social_keywords" readonly></textarea>
                 </div>
               </div>
               <div class="actions">
