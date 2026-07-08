@@ -1,13 +1,5 @@
 {
   "sources_path": "config/sources.json",
-  "output_dir": "briefs/us_equities",
-  "runs_dir": "runs/us_equities",
-  "schedule": {
-    "mode": "daily",
-    "time": "20:00",
-    "interval_minutes": 1440,
-    "run_on_start": false
-  },
   "market": {
     "calendar": {
       "provider": "config",

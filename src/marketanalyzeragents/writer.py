@@ -3,32 +3,11 @@ from __future__ import annotations
 import json
 import html
 import re
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from .config import ensure_dirs, resolve_path
-
-
-def output_path_for(
-    root: Path,
-    settings: Mapping[str, Any],
-    run_date: date,
-    override: str | None = None,
-) -> Path:
-    if override:
-        return resolve_path(root, override)
-
-    base_dir = resolve_path(root, settings.get("output_dir", "briefs"))
-    return base_dir / f"{run_date.isoformat()}-brief.md"
-
-
-def runs_dir_for(root: Path, settings: Mapping[str, Any]) -> Path:
-    return resolve_path(root, settings.get("runs_dir", "runs"))
-
-
-def source_log_path_for(output_path: Path) -> Path:
-    return output_path.with_name(f"{output_path.stem}-source-log.md")
+from .config import ensure_dirs
 
 
 def _inline_markdown_to_html(value: str) -> str:

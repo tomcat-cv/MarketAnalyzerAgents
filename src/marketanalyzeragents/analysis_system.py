@@ -1,0 +1,673 @@
+from __future__ import annotations
+
+import json
+import re
+import time
+import urllib.parse
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Mapping
+from zoneinfo import ZoneInfo
+
+from .collectors import collect_rss_items
+from .collectors_core import HttpClient, resolve_research_window, strip_html
+from .config import load_json, load_settings, resolve_path
+from .evidence import configured_portfolio_holdings
+from .intraday import MarketDataProviderError, fetch_market_data
+from .market_calendar import calendar_from_settings, market_status
+from .openai_runner import run_openai
+from .portfolio_snapshots import normalize_holding
+from .writer import markdown_to_html, write_json, write_json_atomic, write_text
+from .zhipu_runner import run_zhipu
+
+
+MARKETS = ("a_share", "us_equities")
+SOCIAL_PLATFORMS = ("x", "xiaohongshu")
+REPORT_SCHEDULES = ("08:00", "14:00", "20:00")
+
+
+@dataclass
+class OfficialItem:
+    title: str
+    source: str
+    published_at: str
+    url: str
+    summary: str
+    topics: list[str] = field(default_factory=list)
+    tickers: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SocialPost:
+    platform: str
+    author: str
+    published_at: str
+    url: str
+    text: str
+    keywords: list[str] = field(default_factory=list)
+    sentiment: str = "neutral"
+
+
+@dataclass
+class ContentPack:
+    official: list[OfficialItem]
+    social_posts: list[SocialPost]
+    source_warnings: list[str]
+
+
+def beijing_now(settings: Mapping[str, Any]) -> datetime:
+    return datetime.now(ZoneInfo(str(settings.get("timezone", "Asia/Shanghai"))))
+
+
+def sources_path(root: Path, settings: Mapping[str, Any]) -> Path:
+    return resolve_path(root, settings.get("sources_path", "config/sources.json"))
+
+
+def read_sources(root: Path, settings: Mapping[str, Any]) -> dict[str, Any]:
+    value = load_json(sources_path(root, settings), {})
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def configured_topics(sources: Mapping[str, Any]) -> list[dict[str, Any]]:
+    topics: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    raw_topics = sources.get("focus_topics", [])
+    if not isinstance(raw_topics, list):
+        return topics
+    for item in raw_topics:
+        if not isinstance(item, Mapping):
+            continue
+        topic_id = str(item.get("id", item.get("name", ""))).strip()
+        if not topic_id or topic_id in seen:
+            continue
+        seen.add(topic_id)
+        keywords = _string_list(item.get("keywords", []))
+        if not keywords:
+            for segment in item.get("segments", []):
+                if isinstance(segment, Mapping):
+                    keywords.extend(_string_list(segment.get("topics", [])))
+        topics.append(
+            {
+                "id": topic_id,
+                "name": str(item.get("name", topic_id)).strip() or topic_id,
+                "keywords": keywords,
+            }
+        )
+    return topics
+
+
+def write_sources(root: Path, settings: Mapping[str, Any], sources: Mapping[str, Any]) -> Path:
+    return write_json_atomic(sources_path(root, settings), dict(sources))
+
+
+def analysis_dir(root: Path, settings: Mapping[str, Any], key: str) -> Path:
+    state = settings.get("state", {})
+    if not isinstance(state, Mapping):
+        state = {}
+    base = resolve_path(root, state.get("analysis_dir", "state/analysis"))
+    return base / key
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        pieces = re.split(r"[\n,，]+", value)
+    elif isinstance(value, list):
+        pieces = [str(item) for item in value]
+    else:
+        return []
+    return [item.strip() for item in pieces if item.strip()]
+
+
+def _model_configuration(settings: Mapping[str, Any]) -> dict[str, Any]:
+    backend = str(settings.get("backend", "zhipu"))
+    openai_settings = settings.get("openai", {})
+    zhipu_settings = settings.get("zhipu", {})
+    intraday = settings.get("intraday_agents", {})
+    if not isinstance(openai_settings, Mapping):
+        openai_settings = {}
+    if not isinstance(zhipu_settings, Mapping):
+        zhipu_settings = {}
+    if not isinstance(intraday, Mapping):
+        intraday = {}
+    active = settings.get(backend, {})
+    if not isinstance(active, Mapping):
+        active = {}
+    return {
+        "backend": backend,
+        "model": str(active.get("model") or settings.get("model", "")),
+        "openai_model": str(openai_settings.get("model", "")),
+        "zhipu_model": str(zhipu_settings.get("model", "")),
+        "advice_backend": str(intraday.get("advice_backend", backend)),
+        "debate_rounds": int(intraday.get("debate_rounds", 1)),
+    }
+
+
+def update_model_configuration(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    path = root / "config" / "settings.json"
+    settings = load_json(path, {})
+    if not isinstance(settings, dict):
+        settings = {}
+    backend = str(payload.get("backend", settings.get("backend", "zhipu"))).strip()
+    if backend not in {"zhipu", "openai", "dry-run"}:
+        raise ValueError("backend must be zhipu, openai, or dry-run")
+    settings["backend"] = backend
+    settings.setdefault("openai", {})
+    settings.setdefault("zhipu", {})
+    settings.setdefault("intraday_agents", {})
+    if not isinstance(settings["openai"], dict) or not isinstance(settings["zhipu"], dict):
+        raise ValueError("model provider settings must be JSON objects")
+    if not isinstance(settings["intraday_agents"], dict):
+        settings["intraday_agents"] = {}
+    openai_model = str(payload.get("openai_model", "")).strip()
+    zhipu_model = str(payload.get("zhipu_model", "")).strip()
+    model = str(payload.get("model", "")).strip()
+    if openai_model:
+        settings["openai"]["model"] = openai_model
+    if zhipu_model:
+        settings["zhipu"]["model"] = zhipu_model
+    if backend == "openai" and (model or openai_model):
+        settings["openai"]["model"] = model or openai_model
+        settings["model"] = model or openai_model
+    if backend == "zhipu" and (model or zhipu_model):
+        settings["zhipu"]["model"] = model or zhipu_model
+        settings["model"] = model or zhipu_model
+    advice_backend = str(payload.get("advice_backend", "")).strip()
+    if advice_backend:
+        if advice_backend not in {"zhipu", "openai", "dry-run"}:
+            raise ValueError("advice_backend must be zhipu, openai, or dry-run")
+        settings["intraday_agents"]["advice_backend"] = advice_backend
+    if str(payload.get("debate_rounds", "")).strip():
+        rounds = int(payload["debate_rounds"])
+        if rounds < 1 or rounds > 3:
+            raise ValueError("debate_rounds must be between 1 and 3")
+        settings["intraday_agents"]["debate_rounds"] = rounds
+    write_json_atomic(path, settings)
+    return _model_configuration(load_settings(root))
+
+
+def upsert_holding(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = load_settings(root)
+    sources = read_sources(root, settings)
+    market = str(payload.get("market", "")).strip()
+    if market not in MARKETS:
+        raise ValueError("market must be a_share or us_equities")
+    value = normalize_holding(market, payload)
+    holdings = sources.setdefault("portfolios", {}).setdefault(market, {}).setdefault("holdings", [])
+    if not isinstance(holdings, list):
+        raise ValueError("holdings must be a list")
+    for index, item in enumerate(holdings):
+        if str(item.get("ticker", "")).strip().upper() == value["ticker"].upper():
+            holdings[index] = value
+            break
+    else:
+        holdings.append(value)
+    write_sources(root, settings, sources)
+    return value
+
+
+def delete_holding(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = load_settings(root)
+    sources = read_sources(root, settings)
+    market = str(payload.get("market", "")).strip()
+    ticker = str(payload.get("ticker", "")).strip().upper()
+    if market not in MARKETS or not ticker:
+        raise ValueError("market and ticker are required")
+    holdings = sources.get("portfolios", {}).get(market, {}).get("holdings", [])
+    if isinstance(holdings, list):
+        sources["portfolios"][market]["holdings"] = [
+            item for item in holdings if str(item.get("ticker", "")).strip().upper() != ticker
+        ]
+    write_sources(root, settings, sources)
+    return {"market": market, "ticker": ticker, "deleted": True}
+
+
+def upsert_topic(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = load_settings(root)
+    sources = read_sources(root, settings)
+    topic_id = str(payload.get("id", "")).strip()
+    if not topic_id:
+        raise ValueError("topic id is required")
+    value = {
+        "id": topic_id,
+        "name": str(payload.get("name", topic_id)).strip() or topic_id,
+        "keywords": _string_list(payload.get("keywords", [])),
+    }
+    topics = sources.setdefault("focus_topics", [])
+    if not isinstance(topics, list):
+        raise ValueError("focus_topics must be a list")
+    for index, item in enumerate(topics):
+        if isinstance(item, Mapping) and str(item.get("id", item.get("name", ""))).strip() == topic_id:
+            topics[index] = value
+            break
+    else:
+        topics.append(value)
+    write_sources(root, settings, sources)
+    return value
+
+
+def delete_topic(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = load_settings(root)
+    sources = read_sources(root, settings)
+    topic_id = str(payload.get("id", "")).strip()
+    if not topic_id:
+        raise ValueError("topic id is required")
+    topics = sources.get("focus_topics", [])
+    if isinstance(topics, list):
+        sources["focus_topics"] = [
+            item
+            for item in topics
+            if not isinstance(item, Mapping) or str(item.get("id", item.get("name", ""))).strip() != topic_id
+        ]
+    write_sources(root, settings, sources)
+    return {"id": topic_id, "deleted": True}
+
+
+def update_source_configuration(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = load_settings(root)
+    sources = read_sources(root, settings)
+    sources["official_sources"] = payload.get("official_sources", [])
+    sources["social_sources"] = payload.get("social_sources", {})
+    sources["fear_greed"] = payload.get("fear_greed", {})
+    write_sources(root, settings, sources)
+    return {
+        "official_sources": sources["official_sources"],
+        "social_sources": sources["social_sources"],
+        "fear_greed": sources["fear_greed"],
+    }
+
+
+def _configured_official_sources(sources: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = sources.get("official_sources")
+    if isinstance(raw, list):
+        return [dict(item) for item in raw if isinstance(item, Mapping) and item.get("enabled", True)]
+    legacy = sources.get("collectors", {})
+    if not isinstance(legacy, Mapping):
+        return []
+    feeds: list[dict[str, Any]] = []
+    for key in ("rss_feeds", "company_rss_feeds"):
+        for item in legacy.get(key, []):
+            if isinstance(item, Mapping) and item.get("enabled", True):
+                feeds.append(dict(item))
+    return feeds
+
+
+def _collect_official(root: Path, settings: Mapping[str, Any], sources: Mapping[str, Any]) -> tuple[list[OfficialItem], list[str]]:
+    collector_settings = settings.get("collectors", {})
+    if not isinstance(collector_settings, Mapping):
+        collector_settings = {}
+    client = HttpClient(
+        str(collector_settings.get("user_agent", "market-analyzer-agents/0.1")),
+        int(collector_settings.get("timeout_seconds", 30)),
+        int(collector_settings.get("max_retries", 2)),
+        float(collector_settings.get("retry_backoff_seconds", 1.0)),
+    )
+    window = resolve_research_window(settings)
+    items: list[OfficialItem] = []
+    warnings: list[str] = []
+    for source in _configured_official_sources(sources):
+        if str(source.get("type", "rss")) != "rss":
+            continue
+        try:
+            rss_items = collect_rss_items(
+                client=client,
+                feed=source,
+                cutoff=window.start,
+                window_end=window.end,
+            )
+        except Exception as exc:
+            warnings.append(f"{source.get('name', source.get('url', 'official source'))}: {exc}")
+            continue
+        for item in rss_items:
+            items.append(
+                OfficialItem(
+                    title=item.title,
+                    source=item.source_name,
+                    published_at=item.published_at,
+                    url=item.url,
+                    summary=item.content,
+                    topics=item.matched_topics,
+                    tickers=item.matched_tickers,
+                )
+            )
+    return items, warnings
+
+
+def _classify_sentiment(text: str) -> str:
+    value = text.casefold()
+    positive = ("看多", "利好", "上涨", "突破", "增长", "超预期", "bull", "buy", "positive")
+    negative = ("看空", "利空", "下跌", "破位", "衰退", "低预期", "bear", "sell", "negative")
+    pos = sum(1 for word in positive if word in value)
+    neg = sum(1 for word in negative if word in value)
+    if pos > neg:
+        return "positive"
+    if neg > pos:
+        return "negative"
+    return "neutral"
+
+
+def _collect_social(sources: Mapping[str, Any]) -> tuple[list[SocialPost], list[str]]:
+    social = sources.get("social_sources", {})
+    if not isinstance(social, Mapping):
+        return [], []
+    posts: list[SocialPost] = []
+    warnings: list[str] = []
+    for platform in SOCIAL_PLATFORMS:
+        config = social.get(platform, {})
+        if not isinstance(config, Mapping) or not config.get("enabled", True):
+            continue
+        keywords = _string_list(config.get("keywords", []))
+        for raw_post in config.get("manual_posts", []):
+            if not isinstance(raw_post, Mapping):
+                continue
+            text = strip_html(str(raw_post.get("text", "")).strip())
+            if not text:
+                continue
+            posts.append(
+                SocialPost(
+                    platform=platform,
+                    author=str(raw_post.get("author", "")).strip(),
+                    published_at=str(raw_post.get("published_at", "")).strip(),
+                    url=str(raw_post.get("url", "")).strip(),
+                    text=text,
+                    keywords=keywords,
+                    sentiment=str(raw_post.get("sentiment") or _classify_sentiment(text)),
+                )
+            )
+        if config.get("accounts") or config.get("keywords"):
+            warnings.append(f"{platform} 已配置账号/关键词；当前核心实现等待授权采集适配器写入 manual_posts。")
+    return posts, warnings
+
+
+def collect_content(root: Path, settings: Mapping[str, Any], sources: Mapping[str, Any]) -> ContentPack:
+    official, official_warnings = _collect_official(root, settings, sources)
+    social_posts, social_warnings = _collect_social(sources)
+    return ContentPack(
+        official=official,
+        social_posts=social_posts,
+        source_warnings=official_warnings + social_warnings,
+    )
+
+
+def social_summary(posts: list[SocialPost]) -> dict[str, Any]:
+    counts = {"positive": 0, "negative": 0, "neutral": 0}
+    by_author: dict[str, list[dict[str, str]]] = {}
+    for post in posts:
+        sentiment = post.sentiment if post.sentiment in counts else "neutral"
+        counts[sentiment] += 1
+        if post.author:
+            by_author.setdefault(post.author, []).append(
+                {
+                    "platform": post.platform,
+                    "published_at": post.published_at,
+                    "url": post.url,
+                    "text": post.text[:240],
+                    "sentiment": sentiment,
+                }
+            )
+    total = sum(counts.values())
+    dominant = max(counts, key=lambda key: counts[key]) if total else "neutral"
+    return {"counts": counts, "total": total, "dominant": dominant, "by_author": by_author}
+
+
+def _call_model(settings: Mapping[str, Any], *, system: str, user: str, backend: str | None = None) -> str:
+    selected = backend or str(settings.get("backend", "zhipu"))
+    if selected == "dry-run":
+        return ""
+    if selected == "openai":
+        result, _ = run_openai(settings=settings, system=system, user=user)
+        return result.text.strip()
+    if selected == "zhipu":
+        result, _ = run_zhipu(settings=settings, system=system, user=user)
+        return result.text.strip()
+    raise ValueError("backend must be zhipu, openai, or dry-run")
+
+
+def _report_fallback(pack: ContentPack, sources: Mapping[str, Any], run_at: datetime) -> str:
+    fear_greed = sources.get("fear_greed", {})
+    fear_text = ""
+    if isinstance(fear_greed, Mapping) and fear_greed.get("value") not in (None, ""):
+        fear_text = f"{fear_greed.get('value')} / {fear_greed.get('label', '')}".strip()
+    official_lines = [
+        f"- [{item.title}]({item.url})：{item.summary[:180]}"
+        for item in pack.official[:8]
+        if item.url and item.title
+    ]
+    sentiment = social_summary(pack.social_posts)
+    author_lines = []
+    for author, posts in list(sentiment["by_author"].items())[:6]:
+        latest = posts[0]
+        author_lines.append(f"- {author}（{latest['platform']}，{latest['sentiment']}）：{latest['text']}")
+    return "\n".join(
+        [
+            f"# 市场分析报告 {run_at.strftime('%Y-%m-%d %H:%M')}",
+            "",
+            "## 核心判断",
+            "官方资讯和社媒反馈已按来源分层整理；盘中使用同一批信息作为建议上下文。",
+            "",
+            "## 官方资讯",
+            *(official_lines or ["- 当前窗口内没有新的官方链接进入报告。"]),
+            "",
+            "## 社媒情绪",
+            f"- 帖子统计：积极 {sentiment['counts']['positive']}，消极 {sentiment['counts']['negative']}，中性 {sentiment['counts']['neutral']}；主导情绪 {sentiment['dominant']}。",
+            *(author_lines or ["- 已保留博主分析区；配置账号后由采集适配器写入最新帖子。"]),
+            "",
+            "## 恐惧贪婪指数",
+            f"- {fear_text or '未配置最新指数值；可在来源配置中更新。'}",
+        ]
+    )
+
+
+def generate_market_report(root: Path, *, slot: str | None = None, backend: str | None = None) -> dict[str, Any]:
+    settings = load_settings(root)
+    sources = read_sources(root, settings)
+    run_at = beijing_now(settings)
+    slot_value = slot or run_at.strftime("%H:%M")
+    pack = collect_content(root, settings, sources)
+    payload = {
+        "holdings": configured_portfolio_holdings(sources),
+        "topics": configured_topics(sources),
+        "official": [item.__dict__ for item in pack.official],
+        "social": [item.__dict__ for item in pack.social_posts],
+        "social_summary": social_summary(pack.social_posts),
+        "fear_greed": sources.get("fear_greed", {}),
+        "warnings": pack.source_warnings,
+    }
+    system = (
+        "你是股票交易辅助系统的市场分析师。输出中文 Markdown，结构清晰，避免空泛套话。"
+        "官方资讯必须用可读标题链接，不输出裸长 URL。社媒部分要区分博主观点和总体情绪。"
+        "不要写“证据不足无法给出建议”这类垃圾信息；没有材料时直接省略该分论点或说明待配置。"
+    )
+    user = json.dumps(payload, ensure_ascii=False, indent=2)
+    try:
+        markdown = _call_model(settings, system=system, user=user, backend=backend) or _report_fallback(pack, sources, run_at)
+    except Exception as exc:
+        pack.source_warnings.append(f"model: {exc}")
+        markdown = _report_fallback(pack, sources, run_at)
+    report_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{slot_value.replace(':', '')}"
+    json_path = analysis_dir(root, settings, "reports") / f"{report_id}.json"
+    html_path = analysis_dir(root, settings, "reports") / f"{report_id}.html"
+    result = {
+        "id": report_id,
+        "slot": slot_value,
+        "generated_at": run_at.isoformat(timespec="seconds"),
+        "title": f"{run_at.strftime('%Y-%m-%d')} {slot_value} 市场分析报告",
+        "markdown": markdown,
+        "html_path": str(html_path),
+        "official_count": len(pack.official),
+        "social_count": len(pack.social_posts),
+        "warnings": pack.source_warnings,
+    }
+    write_json(json_path, result)
+    write_text(html_path, markdown_to_html(markdown, result["title"]))
+    return result
+
+
+def generate_intraday_suggestion(root: Path, *, backend: str | None = None) -> dict[str, Any]:
+    settings = load_settings(root)
+    sources = read_sources(root, settings)
+    run_at = beijing_now(settings)
+    holdings = configured_portfolio_holdings(sources)
+    quote_rows: list[dict[str, Any]] = []
+    quote_errors: list[str] = []
+    collector_settings = settings.get("collectors", {})
+    if not isinstance(collector_settings, Mapping):
+        collector_settings = {}
+    client = HttpClient(
+        str(collector_settings.get("user_agent", "market-analyzer-agents/0.1")),
+        int(collector_settings.get("timeout_seconds", 30)),
+        int(collector_settings.get("max_retries", 2)),
+        float(collector_settings.get("retry_backoff_seconds", 1.0)),
+    )
+    for holding in holdings:
+        market = str(holding.get("market", ""))
+        symbol = str(holding.get("symbol") or holding.get("ticker") or "").strip()
+        try:
+            data = fetch_market_data(client, market, symbol, settings.get("market_data", {}))
+        except MarketDataProviderError as exc:
+            quote_errors.append(f"{market} {symbol}: {exc}")
+            continue
+        quote_rows.append(
+            {
+                "market": market,
+                "symbol": symbol,
+                "price": data.quote.price,
+                "previous_close": data.quote.previous_close,
+                "observed_at": data.quote.observed_at,
+                "metrics": data.metrics,
+            }
+        )
+    pack = collect_content(root, settings, sources)
+    payload = {
+        "holdings": holdings,
+        "quotes": quote_rows,
+        "quote_errors": quote_errors,
+        "official": [item.__dict__ for item in pack.official[:12]],
+        "social_summary": social_summary(pack.social_posts),
+        "fear_greed": sources.get("fear_greed", {}),
+    }
+    system = (
+        "你是盘中多 agent 讨论的主持人。用市场分析师、新闻分析师、多头研究员、空头研究员、"
+        "风险经理、组合经理六个职责形成简短结论，最后给出可执行的持仓级操作建议。"
+        "不要输出无意义免责声明；建议必须有触发条件、风险点、观察位。"
+    )
+    try:
+        markdown = _call_model(
+            settings,
+            system=system,
+            user=json.dumps(payload, ensure_ascii=False, indent=2),
+            backend=backend or str(settings.get("intraday_agents", {}).get("advice_backend", settings.get("backend", "zhipu"))),
+        )
+    except Exception as exc:
+        pack.source_warnings.append(f"model: {exc}")
+        markdown = (
+            f"# 盘中操作建议 {run_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+            "## 组合经理结论\n"
+            "维持既有仓位纪律，优先处理价格异动和已验证新闻共同指向的标的。\n\n"
+            "## 观察位\n"
+            + "\n".join(f"- {row['symbol']}：现价 {row['price']}，前收 {row.get('previous_close')}" for row in quote_rows[:12])
+        )
+    suggestion_id = run_at.strftime("%Y%m%d-%H%M%S")
+    path = analysis_dir(root, settings, "suggestions") / f"{suggestion_id}.json"
+    result = {
+        "id": suggestion_id,
+        "generated_at": run_at.isoformat(timespec="seconds"),
+        "title": f"{run_at.strftime('%Y-%m-%d %H:%M')} 盘中操作建议",
+        "markdown": markdown,
+        "quote_count": len(quote_rows),
+        "warnings": pack.source_warnings + quote_errors,
+    }
+    write_json(path, result)
+    return result
+
+
+def list_reports(root: Path, settings: Mapping[str, Any], limit: int = 40) -> list[dict[str, Any]]:
+    directory = analysis_dir(root, settings, "reports")
+    if not directory.exists():
+        return []
+    files = sorted(directory.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    reports = []
+    for path in files[:limit]:
+        item = load_json(path, {})
+        if isinstance(item, Mapping):
+            copied = dict(item)
+            copied["url"] = "/analysis/reports/" + urllib.parse.quote(path.with_suffix(".html").name)
+            reports.append(copied)
+    return reports
+
+
+def list_suggestions(root: Path, settings: Mapping[str, Any], limit: int = 20) -> list[dict[str, Any]]:
+    directory = analysis_dir(root, settings, "suggestions")
+    if not directory.exists():
+        return []
+    files = sorted(directory.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    result = []
+    for path in files[:limit]:
+        item = load_json(path, {})
+        if isinstance(item, Mapping):
+            result.append(dict(item))
+    return result
+
+
+def dashboard_state(root: Path) -> dict[str, Any]:
+    settings = load_settings(root)
+    sources = read_sources(root, settings)
+    markets: dict[str, Any] = {}
+    for market in MARKETS:
+        market_settings = settings.get("markets", {}).get(market, {})
+        if not isinstance(market_settings, Mapping):
+            market_settings = {}
+        status = market_status(
+            market,
+            holidays=market_settings.get("holidays", []),
+            extra_open_dates=market_settings.get("extra_open_dates", []),
+            early_closes=market_settings.get("early_closes", {}),
+            calendar=calendar_from_settings(market_settings, root=root),
+        )
+        markets[market] = {"state": status.state, "as_of_beijing": status.as_of_beijing.isoformat(timespec="seconds")}
+    reports = list_reports(root, settings)
+    suggestions = list_suggestions(root, settings)
+    social = sources.get("social_sources", {})
+    official = _configured_official_sources(sources)
+    return {
+        "generated_at": beijing_now(settings).isoformat(timespec="seconds"),
+        "display_timezone": str(settings.get("timezone", "Asia/Shanghai")),
+        "markets": markets,
+        "holdings": configured_portfolio_holdings(sources),
+        "focus_topics": configured_topics(sources),
+        "configuration": _model_configuration(settings),
+        "official_sources": official,
+        "social_sources": social if isinstance(social, Mapping) else {},
+        "fear_greed": sources.get("fear_greed", {}),
+        "latest_report": reports[0] if reports else None,
+        "reports": reports,
+        "suggestions": suggestions,
+        "report_schedule": list(settings.get("report_schedule", REPORT_SCHEDULES)),
+    }
+
+
+def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = False) -> None:
+    last_report_key = ""
+    last_suggestion_key = ""
+    if run_on_start:
+        generate_market_report(root)
+    while True:
+        settings = load_settings(root)
+        now = beijing_now(settings)
+        schedule = settings.get("report_schedule", REPORT_SCHEDULES)
+        if not isinstance(schedule, list):
+            schedule = list(REPORT_SCHEDULES)
+        current_minute = now.strftime("%H:%M")
+        current_day_key = now.strftime("%Y-%m-%d")
+        if current_minute in schedule and last_report_key != f"{current_day_key} {current_minute}":
+            generate_market_report(root, slot=current_minute)
+            last_report_key = f"{current_day_key} {current_minute}"
+        any_open = any(item.get("state") == "open" for item in dashboard_state(root)["markets"].values())
+        suggestion_key = now.strftime("%Y-%m-%d %H:%M")
+        if any_open and suggestion_key != last_suggestion_key:
+            interval = int(settings.get("intraday_suggestion_interval_seconds", 1800))
+            seconds_since_hour = now.minute * 60 + now.second
+            if seconds_since_hour % interval < tick_seconds:
+                generate_intraday_suggestion(root)
+                last_suggestion_key = suggestion_key
+        time.sleep(max(1, tick_seconds))

@@ -17,28 +17,22 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(merged["openai"]["tool"], "y")
         self.assertEqual(merged["backend"], "openai")
 
-    def test_load_settings_accepts_deploy_schedule_env_overrides(self) -> None:
+    def test_load_settings_accepts_report_runtime_env_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "config").mkdir()
             (root / "config" / "settings.json").write_text("{}", encoding="utf-8")
             overrides = {
-                "MARKET_ANALYZER_AGENTS_SCHEDULE_MODE": "interval",
-                "MARKET_ANALYZER_AGENTS_INTERVAL_MINUTES": "360",
-                "MARKET_ANALYZER_AGENTS_RUN_ON_START": "true",
-                "MARKET_ANALYZER_AGENTS_HEALTH_PATH": "state/custom-health.json",
-                "MARKET_ANALYZER_AGENTS_RETENTION_DAYS": "30",
+                "MARKET_ANALYZER_AGENTS_REPORT_SCHEDULE": "08:00,14:00,20:00",
+                "MARKET_ANALYZER_AGENTS_INTRADAY_INTERVAL_SECONDS": "900",
             }
             with patch.dict(os.environ, overrides, clear=False):
                 settings = load_settings(root)
 
-        self.assertEqual(settings["schedule"]["mode"], "interval")
-        self.assertEqual(settings["schedule"]["interval_minutes"], 360)
-        self.assertTrue(settings["schedule"]["run_on_start"])
-        self.assertEqual(settings["service"]["health_path"], "state/custom-health.json")
-        self.assertEqual(settings["service"]["retention_days"], 30)
+        self.assertEqual(settings["report_schedule"], ["08:00", "14:00", "20:00"])
+        self.assertEqual(settings["intraday_suggestion_interval_seconds"], 900)
 
-    def test_market_settings_load_independent_schedule_and_calendar(self) -> None:
+    def test_market_settings_load_independent_calendar(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "config" / "markets").mkdir(parents=True)
@@ -49,9 +43,8 @@ class ConfigTests(unittest.TestCase):
             (root / "config" / "markets" / "a_share.json").write_text(
                 """
                 {
-                  "schedule": {"mode": "daily", "time": "09:00"},
                   "market": {"holidays": ["2026-10-01"], "poll_interval_seconds": 30},
-                  "output_dir": "briefs/a_share"
+                  "sources_path": "config/sources.json"
                 }
                 """,
                 encoding="utf-8",
@@ -59,10 +52,9 @@ class ConfigTests(unittest.TestCase):
 
             settings = load_market_settings(root, load_settings(root), "a_share")
 
-        self.assertEqual(settings["schedule"]["time"], "09:00")
         self.assertEqual(settings["markets"]["a_share"]["holidays"], ["2026-10-01"])
         self.assertEqual(settings["markets"]["a_share"]["poll_interval_seconds"], 30)
-        self.assertEqual(settings["output_dir"], "briefs/a_share")
+        self.assertEqual(settings["sources_path"], "config/sources.json")
 
 if __name__ == "__main__":
     unittest.main()

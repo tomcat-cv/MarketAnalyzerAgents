@@ -1,110 +1,48 @@
-# Market Analyzer Agents
+# Market Analyzer Agents 开发代理规范
 
-## Project Goal
+## 文件定位
 
-Build an end-to-end portfolio tracking system for A-share and US equity
-portfolios. The system must use Beijing time (`Asia/Shanghai`) for all
-user-facing schedules and timestamps while respecting each market's own
-calendar, session boundaries, holidays, and US daylight-saving changes.
+本文件只定义开发代理在本仓库工作时必须遵守的执行规范和硬约束。
 
-The intended workflow is:
+完整产品需求、用户流程、配置范围、架构边界和非目标写在 `PROJECT_PLAN.md`。开发时先读取 `PROJECT_PLAN.md`，但如果用户在当前对话中给出更新、更具体的要求，以用户最新要求为准。
 
-1. Before each market opens, collect and organize current market, company,
-   portfolio, and macro news into a traceable evidence brief.
-2. During each market session, retrieve current and historical price data at
-   configurable high frequency, combine price changes with verified news, and
-   periodically produce evidence-grounded operation suggestions.
-3. After each market closes, ingest the user's actual operation records,
-   compare decisions with prior suggestions and market outcomes, and produce a
-   review that improves future judgment.
+## 必须遵守的硬约束
 
-A-share and US equity workflows are separate market systems. They may share
-domain models and infrastructure, but must not share market calendars,
-session state, data freshness assumptions, or recommendation state.
+- 所有用户可见的时间、计划任务和时间戳使用北京时间（`Asia/Shanghai`）。
+- A 股和美股的市场状态必须独立计算，不能共享交易日历、交易时段状态或数据新鲜度假设。
+- 确定性逻辑必须由代码完成，包括路由、重试、解析、时间戳、交易日历、交易时段、数值计算和来源过滤。
+- 大模型只用于判断、总结、分类、起草和抽取。
+- 社媒平台接入必须通过来源配置和适配器实现，不能伪造不可获得的平台数据。
+- 代码应保持高内聚、低耦合，避免为单次使用场景添加抽象。
 
-## Current Implementation Boundary
+## 工程规则
 
-The repository now contains a foundation for the full workflow: pre-market
-briefs, independent A-share and US session calculation, SQLite quote and
-audit storage, configurable intraday polling, conservative timed suggestions,
-explicit operation ingestion, post-market review, and a transport-neutral
-conversation outbox.
+### 规则 1：先思考再编码
+明确说明假设。不确定时提问，不要猜。存在多种解释时列出解释。困惑时停止并说明不清楚的点。
 
-The built-in Yahoo Finance adapter is a reference data source, not a claim of
-licensed exchange-grade real-time data. Production use still requires
-official holiday feeds, selected licensed quote providers, and an approved
-model-backed recommendation policy. Without verified news and an approved
-judgment backend, intraday output must remain non-directional.
+### 规则 2：简单优先
+用能解决问题的最少代码。不要添加推测性功能，不要为单次使用代码抽象。
 
-Intraday model judgment uses a bounded discussion protocol: market and news
-analysts provide separate views, bull and bear researchers debate, a risk
-manager challenges the result, and a portfolio manager emits the final
-structured decision. Preserve the full transcript for audit. Do not add roles
-that consume the same inputs without a distinct decision responsibility.
+### 规则 3：精确修改
+只修改必要内容。只清理自己造成的问题。遵循现有代码风格。
 
-The future conversation channel must be behind an interface so its transport
-and product design can be selected later. Do not add a chat framework until a
-technical design is explicitly approved.
+### 规则 4：目标驱动
+先定义成功标准，再验证结果。未验证的工作不能称为完成。
 
-See `PROJECT_PLAN.md` for scope, architecture boundaries, and delivery phases.
+### 规则 5：确定性逻辑优先
+代码能回答的问题由代码回答。只有判断和语言理解类任务才使用模型。
 
-These rules apply to every task in this project unless explicitly overridden.
-Bias: caution over speed on non-trivial work. Use judgment on trivial tasks.
+### 规则 6：显式处理冲突
+需求或模式冲突时，选择用户最近的明确指令，并说明选择原因。
 
-## Rule 1 — Think Before Coding
-State assumptions explicitly. If uncertain, ask rather than guess.
-Present multiple interpretations when ambiguity exists.
-Push back when a simpler approach exists.
-Stop when confused. Name what's unclear.
+### 规则 7：先读后写
+新增或删除代码前，先阅读导出、直接调用方和共享工具。
 
-## Rule 2 — Simplicity First
-Minimum code that solves the problem. Nothing speculative.
-No features beyond what was asked. No abstractions for single-use code.
-Test: would a senior engineer say this is overcomplicated? If yes, simplify.
+### 规则 8：关键步骤后检查点
+完成重要改动后，说明改了什么、验证了什么、还剩什么。
 
-## Rule 3 — Surgical Changes
-Touch only what you must. Clean up only your own mess.
-Don't "improve" adjacent code, comments, or formatting.
-Don't refactor what isn't broken. Match existing style.
+### 规则 9：遵循代码库约定
+除非有具体原因，否则遵循本代码库已有约定。
 
-## Rule 4 — Goal-Driven Execution
-Define success criteria. Loop until verified.
-Don't follow steps. Define success and iterate.
-Strong success criteria let you loop independently.
-
-## Rule 5 — Use the model only for judgment calls
-Use me for: classification, drafting, summarization, extraction.
-Do NOT use me for: routing, retries, deterministic transforms.
-If code can answer, code answers.
-
-## Rule 6 — Token budgets are not advisory
-Per-task: 4,000 tokens. Per-session: 30,000 tokens.
-If approaching budget, summarize and start fresh.
-Surface the breach. Do not silently overrun.
-
-## Rule 7 — Surface conflicts, don't average them
-If two patterns contradict, pick one (more recent / more tested).
-Explain why. Flag the other for cleanup.
-Don't blend conflicting patterns.
-
-## Rule 8 — Read before you write
-Before adding code, read exports, immediate callers, shared utilities.
-"Looks orthogonal" is dangerous. If unsure why code is structured a way, ask.
-
-## Rule 9 — Tests verify intent, not just behavior
-Tests must encode WHY behavior matters, not just WHAT it does.
-A test that can't fail when business logic changes is wrong.
-
-## Rule 10 — Checkpoint after every significant step
-Summarize what was done, what's verified, what's left.
-Don't continue from a state you can't describe back.
-If you lose track, stop and restate.
-
-## Rule 11 — Match the codebase's conventions, even if you disagree
-Conformance > taste inside the codebase.
-If you genuinely think a convention is harmful, surface it. Don't fork silently.
-
-## Rule 12 — Fail loud
-"Completed" is wrong if anything was skipped silently.
-"Tests pass" is wrong if any were skipped.
-Default to surfacing uncertainty, not hiding it.
+### 规则 10：失败要显式暴露
+不要隐藏跳过的工作、跳过的测试、不确定性或部分完成状态。

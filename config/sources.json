@@ -1,559 +1,4 @@
 {
-  "collectors": {
-    "cninfo": {
-      "enabled": true,
-      "market_queries": [],
-      "max_pages": 2,
-      "page_size": 30,
-      "theme_queries": []
-    },
-    "company_rss_feeds": [
-      {
-        "allowed_domains": [
-          "nvidianews.nvidia.com",
-          "investor.nvidia.com"
-        ],
-        "limit": 10,
-        "name": "NVIDIA Press Releases",
-        "source_type": "primary",
-        "tickers": [
-          "NVDA"
-        ],
-        "topics": [
-          "NVDA",
-          "AI infrastructure",
-          "semiconductors"
-        ],
-        "url": "https://nvidianews.nvidia.com/cats/press_release.xml"
-      },
-      {
-        "allowed_domains": [
-          "investor.nvidia.com"
-        ],
-        "limit": 10,
-        "name": "NVIDIA Investor Events",
-        "source_type": "primary",
-        "tickers": [
-          "NVDA"
-        ],
-        "topics": [
-          "NVDA",
-          "investor event"
-        ],
-        "url": "https://investor.nvidia.com/rss/event.aspx"
-      },
-      {
-        "allowed_domains": [
-          "investor.nvidia.com"
-        ],
-        "limit": 10,
-        "name": "NVIDIA Investor Presentations",
-        "source_type": "primary",
-        "tickers": [
-          "NVDA"
-        ],
-        "topics": [
-          "NVDA",
-          "investor presentation"
-        ],
-        "url": "https://investor.nvidia.com/rss/presentation.aspx"
-      },
-      {
-        "allowed_domains": [
-          "investor.marvell.com"
-        ],
-        "limit": 10,
-        "name": "Marvell Press Releases",
-        "source_type": "primary",
-        "tickers": [
-          "MRVL"
-        ],
-        "topics": [
-          "MRVL",
-          "custom silicon",
-          "optical networking"
-        ],
-        "url": "https://investor.marvell.com/news-events/press-releases/rss"
-      },
-      {
-        "allowed_domains": [
-          "investor.bloomenergy.com"
-        ],
-        "limit": 10,
-        "name": "Bloom Energy Press Releases",
-        "source_type": "primary",
-        "tickers": [
-          "BE"
-        ],
-        "topics": [
-          "BE",
-          "data-center power",
-          "energy"
-        ],
-        "url": "https://investor.bloomenergy.com/rss/pressrelease.aspx"
-      },
-      {
-        "allowed_domains": [
-          "nokia.com"
-        ],
-        "disabled_reason": "Nokia CDN 对自动化订阅请求返回 HTTP 403；SEC 6-K 和 20-F 采集仍保持启用。",
-        "enabled": false,
-        "limit": 10,
-        "name": "Nokia Stock Exchange Releases",
-        "source_type": "primary",
-        "tickers": [
-          "NOK"
-        ],
-        "topics": [
-          "NOK",
-          "network infrastructure",
-          "optical networking"
-        ],
-        "url": "https://www.nokia.com/newsroom/tagfeed/en-us/tags/stock__exchange__releases"
-      }
-    ],
-    "finnhub": {
-      "allowed_publishers": [
-        "Reuters"
-      ],
-      "disabled_reason": "适配器已实现；只有设置 enabled=true 并配置 FINNHUB_API_KEY 后才会调用。",
-      "enabled": false,
-      "include_company_news": true,
-      "include_market_news": true,
-      "market_category": "general",
-      "max_per_request": 20,
-      "source_type": "reputable_reporting"
-    },
-    "reserved_sources": [
-      {
-        "category": "professional_media",
-        "name": "Reuters / LSEG News API",
-        "reason": "需要商业授权，仅为后续付费升级预留接口。",
-        "status": "reserved"
-      },
-      {
-        "category": "news_aggregator",
-        "name": "NewsAPI",
-        "reason": "免费开发方案存在延迟和生产使用限制，每日任务默认不调用。",
-        "status": "reserved"
-      },
-      {
-        "category": "news_aggregator",
-        "name": "NewsData.io",
-        "reason": "免费方案的延迟和配额会影响晨报时效性，每日任务默认不调用。",
-        "status": "reserved"
-      },
-      {
-        "category": "a_share_data_adapter",
-        "name": "AKShare",
-        "reason": "属于便利型适配器而非法定披露源，当前未安装，仅作为回退方案预留。",
-        "status": "reserved"
-      },
-      {
-        "category": "official_filing",
-        "name": "Shanghai Stock Exchange Announcement Adapter",
-        "reason": "优先级高，但当前未启用未经确认的稳定公共接口；巨潮资讯保持启用。",
-        "status": "reserved"
-      },
-      {
-        "category": "official_filing",
-        "name": "Shenzhen Stock Exchange Announcement Adapter",
-        "reason": "优先级高，但当前未启用未经确认的稳定公共接口；巨潮资讯保持启用。",
-        "status": "reserved"
-      },
-      {
-        "category": "official_company_ir",
-        "name": "Generic Company IR Adapter",
-        "reason": "没有稳定的通用接口；已验证的公司专属官方 RSS 会单独启用。",
-        "status": "reserved"
-      },
-      {
-        "category": "professional_media",
-        "name": "Professional Geopolitical News Feed",
-        "reason": "地缘政治事件需要可靠新闻源交叉验证；优先使用 Reuters/LSEG、Dow Jones、Bloomberg 等授权源。",
-        "status": "reserved"
-      }
-    ],
-    "rss_feeds": [
-      {
-        "allowed_domains": [
-          "federalreserve.gov"
-        ],
-        "limit": 10,
-        "name": "Federal Reserve Press Releases",
-        "source_type": "primary",
-        "topics": [
-          "Federal Reserve",
-          "monetary policy",
-          "financial stability"
-        ],
-        "url": "https://www.federalreserve.gov/feeds/press_all.xml"
-      },
-      {
-        "allowed_domains": [
-          "bls.gov"
-        ],
-        "limit": 5,
-        "name": "BLS Employment Situation",
-        "source_type": "primary",
-        "topics": [
-          "employment",
-          "labor market"
-        ],
-        "url": "https://www.bls.gov/feed/empsit.rss"
-      },
-      {
-        "allowed_domains": [
-          "bls.gov"
-        ],
-        "limit": 5,
-        "name": "BLS Consumer Price Index",
-        "source_type": "primary",
-        "topics": [
-          "inflation",
-          "CPI"
-        ],
-        "url": "https://www.bls.gov/feed/cpi.rss"
-      },
-      {
-        "allowed_domains": [
-          "bls.gov"
-        ],
-        "limit": 5,
-        "name": "BLS Producer Price Index",
-        "source_type": "primary",
-        "topics": [
-          "inflation",
-          "PPI"
-        ],
-        "url": "https://www.bls.gov/feed/ppi.rss"
-      },
-      {
-        "allowed_domains": [
-          "federalregister.gov"
-        ],
-        "limit": 10,
-        "name": "Federal Register - BIS Export Controls",
-        "source_type": "primary",
-        "topics": [
-          "主题:地缘政治",
-          "主题:宏观风险",
-          "export controls",
-          "semiconductors",
-          "AI infrastructure"
-        ],
-        "url": "https://www.federalregister.gov/documents/search.rss?conditions%5Bagencies%5D%5B%5D=industry-and-security-bureau"
-      },
-      {
-        "allowed_domains": [
-          "federalregister.gov"
-        ],
-        "limit": 10,
-        "name": "Federal Register - OFAC Sanctions",
-        "source_type": "primary",
-        "topics": [
-          "主题:地缘政治",
-          "主题:宏观风险",
-          "sanctions",
-          "financial restrictions"
-        ],
-        "url": "https://www.federalregister.gov/documents/search.rss?conditions%5Bagencies%5D%5B%5D=foreign-assets-control-office"
-      },
-      {
-        "allowed_domains": [
-          "ustr.gov"
-        ],
-        "limit": 10,
-        "name": "USTR Press Releases",
-        "source_type": "primary",
-        "topics": [
-          "主题:地缘政治",
-          "主题:宏观风险",
-          "trade policy",
-          "tariffs",
-          "industrial policy"
-        ],
-        "url": "https://ustr.gov/about-us/policy-offices/press-office/press-releases/feed"
-      },
-      {
-        "allowed_domains": [
-          "eia.gov"
-        ],
-        "limit": 10,
-        "name": "EIA Today in Energy",
-        "source_type": "primary",
-        "topics": [
-          "energy",
-          "electricity",
-          "natural gas",
-          "oil"
-        ],
-        "url": "https://www.eia.gov/rss/todayinenergy.xml"
-      },
-      {
-        "allowed_domains": [
-          "eia.gov"
-        ],
-        "limit": 10,
-        "name": "EIA Press Releases",
-        "source_type": "primary",
-        "topics": [
-          "energy",
-          "electricity",
-          "natural gas",
-          "oil"
-        ],
-        "url": "https://www.eia.gov/rss/press_rss.xml"
-      }
-    ],
-    "sec_filings": {
-      "enabled": true,
-      "fetch_document_text": true,
-      "forms": [
-        "8-K",
-        "10-Q",
-        "10-K",
-        "6-K",
-        "20-F",
-        "DEF 14A",
-        "SC 13D",
-        "SC 13G",
-        "3",
-        "4",
-        "5",
-        "S-3",
-        "424B5"
-      ],
-      "max_document_chars": 12000,
-      "max_per_company": 8,
-      "min_document_chars": 200
-    },
-    "yahoo_market_snapshots": {
-      "enabled": true,
-      "include_us_holding_prices": true,
-      "instruments": [
-        {
-          "name": "上证指数",
-          "symbol": "000001.SS",
-          "topics": [
-            "A股",
-            "A股整体市场"
-          ]
-        },
-        {
-          "name": "深证成指",
-          "symbol": "399001.SZ",
-          "topics": [
-            "A股",
-            "A股整体市场"
-          ]
-        },
-        {
-          "name": "创业板指",
-          "symbol": "399006.SZ",
-          "topics": [
-            "A股",
-            "A股成长风格"
-          ]
-        },
-        {
-          "name": "科创50",
-          "symbol": "000688.SS",
-          "topics": [
-            "A股",
-            "A股科技方向"
-          ]
-        },
-        {
-          "name": "S&P 500",
-          "symbol": "^GSPC",
-          "topics": [
-            "美股整体市场"
-          ]
-        },
-        {
-          "name": "Nasdaq Composite",
-          "symbol": "^IXIC",
-          "topics": [
-            "美股整体市场",
-            "美股科技方向"
-          ]
-        }
-      ],
-      "role": "用于每日方向判断的免费补充行情聚合源，不属于监管披露源。"
-    }
-  },
-  "focus_topics": [
-    {
-      "id": "semiconductors",
-      "instruments": [
-        {
-          "name": "A股半导体ETF代理",
-          "symbol": "512480.SS",
-          "topics": [
-            "主题:半导体:A股"
-          ]
-        },
-        {
-          "name": "PHLX Semiconductor Index",
-          "symbol": "^SOX",
-          "topics": [
-            "主题:半导体:美股"
-          ]
-        }
-      ],
-      "name": "半导体",
-      "segments": [
-        {
-          "name": "A股半导体",
-          "topics": [
-            "主题:半导体:A股"
-          ]
-        },
-        {
-          "name": "美股半导体",
-          "topics": [
-            "主题:半导体:美股"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "gold",
-      "instruments": [
-        {
-          "name": "COMEX Gold Futures",
-          "symbol": "GC=F",
-          "topics": [
-            "主题:黄金"
-          ]
-        },
-        {
-          "name": "SPDR Gold Shares",
-          "symbol": "GLD",
-          "topics": [
-            "主题:黄金"
-          ]
-        }
-      ],
-      "name": "黄金",
-      "segments": [
-        {
-          "name": "黄金",
-          "topics": [
-            "主题:黄金"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "silver",
-      "instruments": [
-        {
-          "name": "COMEX Silver Futures",
-          "symbol": "SI=F",
-          "topics": [
-            "主题:白银"
-          ]
-        },
-        {
-          "name": "iShares Silver Trust",
-          "symbol": "SLV",
-          "topics": [
-            "主题:白银"
-          ]
-        }
-      ],
-      "name": "白银",
-      "segments": [
-        {
-          "name": "白银",
-          "topics": [
-            "主题:白银"
-          ]
-        }
-      ]
-    },
-    {
-      "id": "macro_geopolitical_risk",
-      "instruments": [
-        {
-          "name": "CBOE Volatility Index",
-          "symbol": "^VIX",
-          "topics": [
-            "主题:宏观风险",
-            "主题:地缘政治"
-          ]
-        },
-        {
-          "name": "US Dollar Index",
-          "symbol": "DX-Y.NYB",
-          "topics": [
-            "主题:美元",
-            "主题:宏观风险"
-          ]
-        },
-        {
-          "name": "US 10-Year Treasury Yield",
-          "symbol": "^TNX",
-          "topics": [
-            "主题:美债利率",
-            "主题:宏观风险"
-          ]
-        },
-        {
-          "name": "WTI Crude Oil Futures",
-          "symbol": "CL=F",
-          "topics": [
-            "主题:能源",
-            "主题:地缘政治"
-          ]
-        }
-      ],
-      "name": "宏观与地缘风险",
-      "segments": [
-        {
-          "name": "风险偏好",
-          "topics": [
-            "主题:宏观风险",
-            "主题:地缘政治"
-          ]
-        },
-        {
-          "name": "美元与利率",
-          "topics": [
-            "主题:美元",
-            "主题:美债利率"
-          ]
-        },
-        {
-          "name": "能源冲击",
-          "topics": [
-            "主题:能源",
-            "主题:地缘政治"
-          ]
-        }
-      ]
-    }
-  ],
-  "market_scope": {
-    "a_share": {
-      "broad_market": [
-        "上证指数",
-        "深证成指",
-        "创业板指",
-        "科创50"
-      ],
-      "key_themes": []
-    },
-    "us_equities": {
-      "broad_market": [
-        "S&P 500",
-        "Nasdaq Composite"
-      ],
-      "key_themes": []
-    }
-  },
   "portfolios": {
     "a_share": {
       "holdings": []
@@ -561,36 +6,86 @@
     "us_equities": {
       "holdings": [
         {
-          "company": "Micron Technology",
+          "ticker": "NVDA",
+          "symbol": "NVDA",
+          "company": "NVIDIA",
           "themes": [
-            "HBM",
-            "DRAM/NAND pricing",
-            "AI server memory",
-            "capex cycle"
-          ],
-          "ticker": "MU"
-        },
-        {
-          "company": "Marvell Technology",
-          "themes": [
-            "custom silicon",
-            "optical DSP",
-            "data-center networking",
-            "AI infrastructure"
-          ],
-          "ticker": "MRVL"
-        },
-        {
-          "company": "Nokia",
-          "themes": [
-            "network infrastructure",
-            "optical networks",
-            "telecom capex",
-            "data-center connectivity"
-          ],
-          "ticker": "NOK"
+            "AI 算力",
+            "数据中心"
+          ]
         }
       ]
     }
+  },
+  "focus_topics": [
+    {
+      "id": "ai-infrastructure",
+      "name": "AI 基础设施",
+      "keywords": [
+        "AI capex",
+        "GPU",
+        "data center"
+      ]
+    }
+  ],
+  "official_sources": [
+    {
+      "type": "rss",
+      "enabled": true,
+      "name": "NVIDIA Press Releases",
+      "url": "https://nvidianews.nvidia.com/cats/press_release.xml",
+      "topics": [
+        "NVDA",
+        "AI infrastructure"
+      ],
+      "tickers": [
+        "NVDA"
+      ],
+      "allowed_domains": [
+        "nvidianews.nvidia.com"
+      ],
+      "limit": 10,
+      "source_type": "primary"
+    },
+    {
+      "type": "rss",
+      "enabled": true,
+      "name": "Federal Reserve Press Releases",
+      "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+      "topics": [
+        "Federal Reserve",
+        "monetary policy"
+      ],
+      "allowed_domains": [
+        "federalreserve.gov"
+      ],
+      "limit": 10,
+      "source_type": "primary"
+    }
+  ],
+  "social_sources": {
+    "x": {
+      "enabled": true,
+      "keywords": [
+        "NVDA",
+        "AI capex"
+      ],
+      "accounts": [],
+      "manual_posts": []
+    },
+    "xiaohongshu": {
+      "enabled": true,
+      "keywords": [
+        "英伟达",
+        "AI 算力"
+      ],
+      "accounts": [],
+      "manual_posts": []
+    }
+  },
+  "fear_greed": {
+    "value": "",
+    "label": "",
+    "source_url": "https://www.cnn.com/markets/fear-and-greed"
   }
 }

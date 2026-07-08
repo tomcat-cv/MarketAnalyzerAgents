@@ -5,18 +5,15 @@
   "freshness_window": "previous_day_to_run",
   "lookback_hours": 24,
   "language": "zh-CN",
-  "max_items": 12,
-  "context_path": "config/research-context.md",
   "sources_path": "config/sources.json",
-  "market_config_paths": {
-    "a_share": "config/markets/a_share.json",
-    "us_equities": "config/markets/us_equities.json"
-  },
-  "output_dir": "briefs",
-  "runs_dir": "runs",
+  "report_schedule": [
+    "08:00",
+    "14:00",
+    "20:00"
+  ],
+  "intraday_suggestion_interval_seconds": 1800,
   "state": {
-    "database_path": "state/portfolio.db",
-    "conversation_outbox": "state/conversation-outbox.jsonl"
+    "analysis_dir": "state/analysis"
   },
   "markets": {
     "a_share": {
@@ -40,35 +37,18 @@
   },
   "market_data": {
     "provider": "yahoo",
-    "history_range": "6mo",
+    "history_range": "1mo",
     "history_interval": "1d"
-  },
-  "intraday_agents": {
-    "advice_backend": "conservative",
-    "debate_rounds": 1,
-    "max_evidence_items_per_symbol": 8,
-    "price_history_points": 20
-  },
-  "schedule": {
-    "mode": "daily",
-    "time": "06:00",
-    "interval_minutes": 1440,
-    "run_on_start": false
   },
   "collectors": {
     "user_agent": "market-analyzer-agents/0.1 research@example.com",
     "timeout_seconds": 30,
     "max_retries": 2,
-    "retry_backoff_seconds": 1.0,
-    "max_evidence_items": 200
+    "retry_backoff_seconds": 1.0
   },
-  "news_collection": {
-    "interval_seconds": 900
-  },
-  "service": {
-    "health_path": "state/service-health.json",
-    "max_backoff_seconds": 300,
-    "retention_days": 120
+  "intraday_agents": {
+    "advice_backend": "zhipu",
+    "debate_rounds": 1
   },
   "openai": {
     "api_base": "https://api.openai.com/v1",

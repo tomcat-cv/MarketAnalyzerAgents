@@ -1,366 +1,326 @@
-    const state = { data: null, configDirty: false };
-    const fmt = value => value || "";
-    const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      "\"": "&quot;",
-      "'": "&#39;"
-    }[char]));
-    const marketLabel = market => market === "us_equities" ? "美股" : "A 股";
-    const stateLabel = value => ({
-      open: "开盘",
-      closed: "休市",
-      pre_market: "盘前",
-      post_market: "盘后",
-      overnight: "夜盘",
-      overnight_break: "夜盘休整",
-      break: "午间休市"
-    }[value] || value);
+const state = { data: null, configDirty: false };
 
-    function timeZoneLabel(value, fallback) {
-      const text = String(value || "");
-      const match = text.match(/([+-]\d{2}:\d{2}|Z)$/);
-      return match ? `UTC${match[1] === "Z" ? "+00:00" : match[1]}` : fallback;
+const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  "\"": "&quot;",
+  "'": "&#39;"
+}[char]));
+const marketLabel = market => market === "us_equities" ? "美股" : "A 股";
+const stateLabel = value => ({open: "开盘", closed: "休市", pre_market: "盘前", post_market: "盘后", break: "午休"}[value] || value);
+
+function toast(text) {
+  const el = document.getElementById("toast");
+  el.textContent = text;
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), 1800);
+}
+
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "request failed");
+  return data;
+}
+
+function formatTime(value) {
+  return value ? String(value).replace("T", " ").slice(0, 16) : "";
+}
+
+function markdownLite(markdown) {
+  const lines = String(markdown || "").split(/\n/);
+  let html = "";
+  let inList = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      if (inList) { html += "</ul>"; inList = false; }
+      continue;
     }
-
-    function formatTime(value, fallbackZone = state.data?.display_timezone || "Asia/Shanghai", length = 19) {
-      if (!value) return "";
-      return `${String(value).replace("T", " ").slice(0, length)} ${timeZoneLabel(value, fallbackZone)}`;
+    if (line.startsWith("## ")) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += `<h3>${esc(line.slice(3))}</h3>`;
+      continue;
     }
-
-    function toast(text) {
-      const el = document.getElementById("toast");
-      el.textContent = text;
-      el.classList.add("show");
-      setTimeout(() => el.classList.remove("show"), 1800);
+    if (line.startsWith("# ")) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += `<h2>${esc(line.slice(2))}</h2>`;
+      continue;
     }
-
-    async function postJson(url, payload) {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload)
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "request failed");
-      return data;
+    if (line.startsWith("- ")) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${linkify(esc(line.slice(2)))}</li>`;
+      continue;
     }
+    if (inList) { html += "</ul>"; inList = false; }
+    html += `<p>${linkify(esc(line))}</p>`;
+  }
+  if (inList) html += "</ul>";
+  return html;
+}
 
-    function openTab(name) {
-      document.querySelectorAll(".tab-panel").forEach(panel => {
-        panel.hidden = panel.id !== `tab-${name}`;
-      });
-      document.querySelectorAll(".tab-button").forEach(button => {
-        button.classList.toggle("active", button.dataset.tab === name);
-      });
-    }
+function linkify(value) {
+  return value.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+}
 
-    function renderMarketStatus(markets) {
-      const root = document.getElementById("market-status");
-      root.innerHTML = Object.entries(markets).map(([market, item]) => `
-        <div class="market-status">
-          <strong>${market === "us_equities" ? "US Equities" : "A Share"}</strong>
-          <div class="state ${esc(item.state)}">${esc(stateLabel(item.state))}</div>
-          <div class="subtle">${esc(formatTime(item.as_of_beijing))}</div>
-        </div>
-      `).join("");
-    }
+function openTab(name) {
+  document.querySelectorAll(".tab-panel").forEach(panel => { panel.hidden = panel.id !== `tab-${name}`; });
+  document.querySelectorAll(".tab-button").forEach(button => { button.classList.toggle("active", button.dataset.tab === name); });
+}
 
-    function renderOverview(data) {
-      const markets = Object.entries(data.markets || {});
-      const openMarkets = markets.filter(([, item]) => item.state === "open").map(([market]) => marketLabel(market));
-      const quotedHoldings = (data.holdings || []).filter(item => item.quote).length;
-      const quoteRefreshFailures = (((data.quote_refresh || {}).failures) || []).length;
-      const latestBrief = (data.briefs || [])[0];
-      document.getElementById("overview").innerHTML = `
-        <div class="metric"><span>交易状态</span><strong>${esc(openMarkets.length ? openMarkets.join(" / ") : "休市")}</strong><small>${esc(markets.map(([market, item]) => `${marketLabel(market)} ${stateLabel(item.state)}`).join(" · "))}</small></div>
-        <div class="metric"><span>组合覆盖</span><strong>${esc((data.holdings || []).length)}</strong><small>${quoteRefreshFailures ? `${quotedHoldings} 个已有最近行情 · ${quoteRefreshFailures} 个刷新失败` : `${quotedHoldings} 个已有最近行情`}</small></div>
-        <div class="metric"><span>盘中提醒</span><strong>${esc((data.notifications || []).length)}</strong><small>来自建议与 outbox 事件</small></div>
-        <div class="metric"><span>最新简报</span><strong>${latestBrief ? esc(latestBrief.name) : "暂无"}</strong><small>${latestBrief ? esc(formatTime(latestBrief.modified_at, latestBrief.timezone, 16)) : "briefs 目录为空"}</small></div>
-      `;
-    }
+function renderMarketStatus(markets) {
+  document.getElementById("market-status").innerHTML = Object.entries(markets || {}).map(([market, item]) => `
+    <div class="market-status">
+      <strong>${marketLabel(market)}</strong>
+      <div class="state ${esc(item.state)}">${esc(stateLabel(item.state))}</div>
+      <div class="subtle">${esc(formatTime(item.as_of_beijing))}</div>
+    </div>
+  `).join("");
+}
 
-    function renderHoldings(holdings) {
-      document.getElementById("holding-count").textContent = `${holdings.length} 个标的`;
-      const root = document.getElementById("holdings");
-      if (!holdings.length) {
-        root.innerHTML = `<div class="empty">还没有配置持仓。</div>`;
-        return;
-      }
-      root.innerHTML = `<div class="card-list">${holdings.map(h => `
+function renderOverview(data) {
+  const reports = data.reports || [];
+  const suggestions = data.suggestions || [];
+  const social = data.social_sources || {};
+  const sourceCount = (data.official_sources || []).length + Object.values(social).filter(item => item && item.enabled !== false).length;
+  document.getElementById("overview").innerHTML = `
+    <div class="metric"><span>定时报告</span><strong>${esc((data.report_schedule || []).join(" / "))}</strong><small>北京时间</small></div>
+    <div class="metric"><span>持仓</span><strong>${esc((data.holdings || []).length)}</strong><small>A 股与美股分开处理</small></div>
+    <div class="metric"><span>来源</span><strong>${esc(sourceCount)}</strong><small>官方资讯与社媒分层</small></div>
+    <div class="metric"><span>历史报告</span><strong>${esc(reports.length)}</strong><small>盘中建议 ${suggestions.length} 条</small></div>
+  `;
+}
+
+function renderLatestReport(report) {
+  const root = document.getElementById("latest-report");
+  if (!report) {
+    root.innerHTML = `<div class="empty">还没有生成今日报告。</div>`;
+    return;
+  }
+  root.innerHTML = `${markdownLite(report.markdown)}<p><a href="${esc(report.url)}" target="_blank">打开可读 HTML 报告</a></p>`;
+}
+
+function renderSuggestions(items) {
+  const root = document.getElementById("suggestions");
+  if (!items.length) {
+    root.innerHTML = `<div class="empty">还没有盘中建议。</div>`;
+    return;
+  }
+  root.innerHTML = items.map(item => `
+    <article class="alert">
+      <div class="meta">${esc(formatTime(item.generated_at))}</div>
+      <div class="title">${esc(item.title || "盘中操作建议")}</div>
+      <div>${markdownLite(item.markdown)}</div>
+    </article>
+  `).join("");
+}
+
+function renderTracking(data) {
+  document.getElementById("tracking-count").textContent = `${(data.holdings || []).length} 持仓 / ${(data.focus_topics || []).length} Topic`;
+  document.getElementById("tracking").innerHTML = `
+    <div class="card-list">
+      ${(data.holdings || []).map(item => `
         <article class="holding-card">
-          <div class="card-top">
-            <div><div class="ticker">${esc(h.ticker)}</div><div class="subtle">${esc(fmt(h.company))}</div></div>
-            <span class="market-badge">${marketLabel(h.market)}</span>
-          </div>
-          <div class="quote-line">
-            <span class="subtle">最新行情</span>
-            ${h.quote ? `<span><span class="price">${esc(h.quote.price)}</span><br><span class="subtle">${esc(formatTime(h.quote.observed_at))}</span></span>` : `<span class="subtle">暂无</span>`}
-          </div>
-          <div>${(h.themes || []).map(t => `<span class="pill">${esc(t)}</span>`).join("") || `<span class="subtle">未设置主题</span>`}</div>
+          <div class="card-top"><div><div class="ticker">${esc(item.ticker)}</div><div class="subtle">${esc(item.company || "")}</div></div><span class="market-badge">${marketLabel(item.market)}</span></div>
+          <div>${(item.themes || []).map(theme => `<span class="pill">${esc(theme)}</span>`).join("")}</div>
         </article>
-      `).join("")}</div>`;
-    }
-
-    function renderHoldingConfig(holdings) {
-      document.getElementById("holding-config-count").textContent = `${holdings.length} 个`;
-      const root = document.getElementById("holding-config-list");
-      if (!holdings.length) {
-        root.innerHTML = `<div class="empty">还没有配置持仓。</div>`;
-        return;
-      }
-      root.innerHTML = `<table>
-        <thead><tr><th>标的</th><th>市场</th><th>行情代码</th><th>关注主题</th><th></th></tr></thead>
-        <tbody>${holdings.map(h => `
-          <tr>
-            <td><div class="ticker">${esc(h.ticker)}</div><div class="subtle">${esc(fmt(h.company))}</div></td>
-            <td>${marketLabel(h.market)}</td>
-            <td>${esc(h.symbol || h.ticker)}</td>
-            <td>${(h.themes || []).map(t => `<span class="pill">${esc(t)}</span>`).join("") || `<span class="subtle">未设置</span>`}</td>
-            <td><div class="inline-actions"><button class="ghost" data-edit-holding="${esc(h.market)}:${esc(h.ticker)}">编辑</button><button class="danger" data-delete="${esc(h.market)}:${esc(h.ticker)}">删除</button></div></td>
-          </tr>
-        `).join("")}</tbody>
-      </table>`;
-      root.querySelectorAll("[data-delete]").forEach(button => {
-        button.addEventListener("click", async () => {
-          const [market, ticker] = button.dataset.delete.split(":");
-          await postJson("/api/holdings/delete", {market, ticker});
-          toast("持仓已删除");
-          await refresh();
-        });
-      });
-      root.querySelectorAll("[data-edit-holding]").forEach(button => {
-        button.addEventListener("click", () => {
-          const [market, ticker] = button.dataset.editHolding.split(":");
-          const holding = (state.data.holdings || []).find(item => item.market === market && item.ticker === ticker);
-          if (holding) fillHoldingForm(holding);
-          openTab("config");
-        });
-      });
-    }
-
-    function renderAlerts(alerts) {
-      document.getElementById("alert-count").textContent = `${alerts.length} 条`;
-      const root = document.getElementById("alerts");
-      if (!alerts.length) {
-        root.innerHTML = `<div class="empty">暂无需要打扰你的盘中事件。</div>`;
-        return;
-      }
-      root.innerHTML = alerts.map(a => {
-        const klass = `${a.confidence || ""} ${a.action || ""}`.replaceAll("低", "").replaceAll("中", "");
-        return `<article class="alert ${esc(klass)}">
-          <div class="meta">${esc(formatTime(a.created_at || a.generated_at))} · ${esc(fmt(a.market))} ${esc(fmt(a.symbol))}</div>
-          <div class="title">${esc(fmt(a.action || a.type || "提醒"))}${a.confidence ? " / " + esc(a.confidence) : ""}</div>
-          <p>${esc(fmt(a.rationale || a.output || a.message || ""))}</p>
-        </article>`;
-      }).join("");
-    }
-
-    function renderBriefs(briefs) {
-      const root = document.getElementById("briefs");
-      if (!briefs.length) {
-        root.innerHTML = `<div class="empty">还没有生成盘前简报。</div>`;
-        return;
-      }
-      root.innerHTML = briefs.map(b => `
-        <a class="brief-row" href="${esc(b.url)}" target="_blank">
-          <span><strong>${esc(b.name)}</strong><br><span class="subtle">${esc(b.market || "shared")}</span></span>
-          <span class="subtle">${esc(formatTime(b.modified_at, b.timezone))}</span>
-        </a>
-      `).join("");
-    }
-
-    function renderTopics(topics) {
-      document.getElementById("topic-count").textContent = `${topics.length} 个 topic`;
-      const root = document.getElementById("topics");
-      if (!topics.length) {
-        root.innerHTML = `<div class="empty">还没有配置关注 topic。</div>`;
-        return;
-      }
-      root.innerHTML = `<div class="card-list">${topics.map(topic => `
+      `).join("")}
+      ${(data.focus_topics || []).map(item => `
         <article class="topic-card">
-          <div class="card-top">
-            <div><div class="ticker">${esc(topic.name)}</div><div class="subtle">${esc(topic.id)}</div></div>
-            <span class="market-badge">${esc((topic.instruments || []).length)} 工具</span>
-          </div>
-          <div class="topic-meta">
-            <div><strong>主题标签</strong><br>${(topic.segments || []).flatMap(s => s.topics || []).map(t => `<span class="pill">${esc(t)}</span>`).join("") || `<span class="subtle">未设置</span>`}</div>
-            <div><strong>跟踪工具</strong><br>${(topic.instruments || []).map(i => `<span class="pill">${esc(i.symbol)}</span>`).join("") || `<span class="subtle">未设置</span>`}</div>
-          </div>
+          <div class="ticker">${esc(item.name)}</div>
+          <div class="subtle">${esc(item.id)}</div>
+          <div>${(item.keywords || []).map(word => `<span class="pill">${esc(word)}</span>`).join("")}</div>
         </article>
-      `).join("")}</div>`;
-    }
+      `).join("")}
+    </div>`;
+}
 
-    function renderTopicConfig(topics) {
-      document.getElementById("topic-config-count").textContent = `${topics.length} 个`;
-      const root = document.getElementById("topic-config-list");
-      if (!topics.length) {
-        root.innerHTML = `<div class="empty">还没有配置关注 topic。</div>`;
-        return;
-      }
-      const rows = topics.map(topic => `
-        <tr>
-          <td><div class="ticker">${esc(topic.name)}</div><div class="subtle">${esc(topic.id)}</div></td>
-          <td>${(topic.segments || []).flatMap(s => s.topics || []).map(t => `<span class="pill">${esc(t)}</span>`).join("") || `<span class="subtle">未设置</span>`}</td>
-          <td>${(topic.instruments || []).map(i => `<span class="pill">${esc(i.symbol)}</span>`).join("") || `<span class="subtle">未设置</span>`}</td>
-          <td><div class="inline-actions"><button class="ghost" data-edit-topic="${esc(topic.id)}">编辑</button><button class="danger" data-delete-topic="${esc(topic.id)}">删除</button></div></td>
-        </tr>
-      `).join("");
-      root.innerHTML = `<table><thead><tr><th>名称</th><th>主题标签</th><th>工具</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
-      root.querySelectorAll("[data-edit-topic]").forEach(button => {
-        button.addEventListener("click", () => {
-          const topic = (state.data.focus_topics || []).find(item => item.id === button.dataset.editTopic);
-          if (topic) fillTopicForm(topic);
-          openTab("config");
-        });
-      });
-      root.querySelectorAll("[data-delete-topic]").forEach(button => {
-        button.addEventListener("click", async () => {
-          await postJson("/api/topics/delete", {id: button.dataset.deleteTopic});
-          toast("Topic 已删除");
-          await refresh();
-        });
-      });
-    }
+function renderArchive(reports) {
+  const root = document.getElementById("reports");
+  if (!reports.length) {
+    root.innerHTML = `<div class="empty">暂无历史报告。</div>`;
+    return;
+  }
+  root.innerHTML = reports.map(report => `
+    <a class="brief-row" href="${esc(report.url)}" target="_blank">
+      <span><strong>${esc(report.title)}</strong><br><span class="subtle">${esc(report.official_count || 0)} 官方 / ${esc(report.social_count || 0)} 社媒</span></span>
+      <span class="subtle">${esc(formatTime(report.generated_at))}</span>
+    </a>
+  `).join("");
+}
 
-    function renderConfiguration(config) {
-      const form = document.getElementById("model-form");
-      form.backend.value = config.backend || "zhipu";
-      form.model.value = config.model || "";
-      form.zhipu_model.value = (config.zhipu || {}).model || "";
-      form.openai_model.value = (config.openai || {}).model || "";
-      form.advice_backend.value = (config.intraday_agents || {}).advice_backend || "conservative";
-      form.debate_rounds.value = (config.intraday_agents || {}).debate_rounds || 1;
-    }
-
-    function fillHoldingForm(holding) {
-      const form = document.getElementById("holding-form");
-      form.market.value = holding.market;
-      form.ticker.value = holding.ticker;
-      form.symbol.value = holding.symbol || holding.ticker;
-      form.company.value = holding.company || "";
-      form.themes.value = (holding.themes || []).join("\n");
-      state.configDirty = true;
-    }
-
-    function tagsFromText(value) {
-      return String(value || "").split(/,|，/).map(item => item.trim()).filter(Boolean);
-    }
-
-    function parseSegments(value) {
-      return String(value || "").split(/\n/).map(line => line.trim()).filter(Boolean).map(line => {
-        const parts = line.split("|").map(part => part.trim());
-        return {name: parts[0], topics: tagsFromText(parts[1] || parts[0])};
-      }).filter(item => item.name && item.topics.length);
-    }
-
-    function parseInstruments(value) {
-      return String(value || "").split(/\n/).map(line => line.trim()).filter(Boolean).map(line => {
-        const parts = line.split("|").map(part => part.trim());
-        return {symbol: parts[0], name: parts[1] || parts[0], topics: tagsFromText(parts[2] || "")};
-      }).filter(item => item.symbol);
-    }
-
-    function fillTopicForm(topic) {
-      const form = document.getElementById("topic-form");
-      form.id.value = topic.id;
-      form.name.value = topic.name || "";
-      form.segments.value = (topic.segments || []).map(s => `${s.name} | ${(s.topics || []).join(", ")}`).join("\n");
-      form.instruments.value = (topic.instruments || []).map(i => `${i.symbol} | ${i.name || i.symbol} | ${(i.topics || []).join(", ")}`).join("\n");
-      state.configDirty = true;
-    }
-
-    function render(data) {
-      state.data = data;
-      document.getElementById("clock").textContent = `更新时间 ${formatTime(data.generated_at, data.display_timezone)}`;
-      renderMarketStatus(data.markets || {});
-      renderOverview(data);
-      renderHoldings(data.holdings || []);
-      renderHoldingConfig(data.holdings || []);
-      renderAlerts(data.notifications || []);
-      renderBriefs(data.briefs || []);
-      renderTopics(data.focus_topics || []);
-      renderTopicConfig(data.focus_topics || []);
-      if (!state.configDirty) renderConfiguration(data.configuration || {});
-    }
-
-    async function refresh() {
-      const response = await fetch("/api/state");
-      render(await response.json());
-    }
-
-    document.querySelectorAll(".tab-button").forEach(button => {
-      button.addEventListener("click", () => openTab(button.dataset.tab));
-    });
-
-    document.querySelectorAll("#model-form, #holding-form, #topic-form").forEach(form => {
-      form.addEventListener("input", () => { state.configDirty = true; });
-      form.addEventListener("reset", () => { setTimeout(() => { state.configDirty = false; render(state.data); }, 0); });
-    });
-
-    document.getElementById("model-form").backend.addEventListener("change", event => {
-      const form = event.target.form;
-      if (event.target.value === "openai") form.model.value = form.openai_model.value;
-      if (event.target.value === "zhipu") form.model.value = form.zhipu_model.value;
-    });
-    document.getElementById("model-form").openai_model.addEventListener("input", event => {
-      const form = event.target.form;
-      if (form.backend.value === "openai") form.model.value = event.target.value;
-    });
-    document.getElementById("model-form").zhipu_model.addEventListener("input", event => {
-      const form = event.target.form;
-      if (form.backend.value === "zhipu") form.model.value = event.target.value;
-    });
-
-    document.getElementById("model-form").addEventListener("submit", async event => {
-      event.preventDefault();
-      const form = new FormData(event.target);
-      await postJson("/api/model-config", {
-        backend: form.get("backend"),
-        model: String(form.get("model") || "").trim(),
-        zhipu_model: String(form.get("zhipu_model") || "").trim(),
-        openai_model: String(form.get("openai_model") || "").trim(),
-        advice_backend: form.get("advice_backend"),
-        debate_rounds: form.get("debate_rounds")
-      });
-      state.configDirty = false;
-      toast("模型配置已保存");
+function renderHoldingConfig(holdings) {
+  document.getElementById("holding-config-count").textContent = `${holdings.length} 个`;
+  const root = document.getElementById("holding-config-list");
+  if (!holdings.length) {
+    root.innerHTML = `<div class="empty">还没有配置持仓。</div>`;
+    return;
+  }
+  root.innerHTML = `<table><thead><tr><th>标的</th><th>市场</th><th>主题</th><th></th></tr></thead><tbody>${holdings.map(item => `
+    <tr>
+      <td><div class="ticker">${esc(item.ticker)}</div><div class="subtle">${esc(item.company || "")}</div></td>
+      <td>${marketLabel(item.market)}</td>
+      <td>${(item.themes || []).map(theme => `<span class="pill">${esc(theme)}</span>`).join("")}</td>
+      <td><button class="danger" data-delete-holding="${esc(item.market)}:${esc(item.ticker)}" type="button">删除</button></td>
+    </tr>`).join("")}</tbody></table>`;
+  root.querySelectorAll("[data-delete-holding]").forEach(button => {
+    button.addEventListener("click", async () => {
+      const [market, ticker] = button.dataset.deleteHolding.split(":");
+      await postJson("/api/holdings/delete", {market, ticker});
       await refresh();
     });
+  });
+}
 
-    document.getElementById("holding-form").addEventListener("submit", async event => {
-      event.preventDefault();
-      const form = new FormData(event.target);
-      await postJson("/api/holdings", {
-        market: form.get("market"),
-        ticker: String(form.get("ticker") || "").trim(),
-        symbol: String(form.get("symbol") || "").trim(),
-        company: String(form.get("company") || "").trim(),
-        themes: String(form.get("themes") || "").split(/\n|,/).map(v => v.trim()).filter(Boolean)
-      });
-      event.target.reset();
-      state.configDirty = false;
-      toast("持仓已保存");
+function renderTopicConfig(topics) {
+  document.getElementById("topic-config-count").textContent = `${topics.length} 个`;
+  const root = document.getElementById("topic-config-list");
+  if (!topics.length) {
+    root.innerHTML = `<div class="empty">还没有配置 Topic。</div>`;
+    return;
+  }
+  root.innerHTML = `<table><thead><tr><th>Topic</th><th>关键词</th><th></th></tr></thead><tbody>${topics.map(item => `
+    <tr>
+      <td><div class="ticker">${esc(item.name)}</div><div class="subtle">${esc(item.id)}</div></td>
+      <td>${(item.keywords || []).map(word => `<span class="pill">${esc(word)}</span>`).join("")}</td>
+      <td><button class="danger" data-delete-topic="${esc(item.id)}" type="button">删除</button></td>
+    </tr>`).join("")}</tbody></table>`;
+  root.querySelectorAll("[data-delete-topic]").forEach(button => {
+    button.addEventListener("click", async () => {
+      await postJson("/api/topics/delete", {id: button.dataset.deleteTopic});
       await refresh();
     });
+  });
+}
 
-    document.getElementById("topic-form").addEventListener("submit", async event => {
-      event.preventDefault();
-      const form = new FormData(event.target);
-      await postJson("/api/topics", {
-        id: String(form.get("id") || "").trim(),
-        name: String(form.get("name") || "").trim(),
-        segments: parseSegments(form.get("segments")),
-        instruments: parseInstruments(form.get("instruments"))
-      });
-      event.target.reset();
-      state.configDirty = false;
-      toast("Topic 已保存");
-      await refresh();
-    });
+function lines(value) {
+  return String(value || "").split(/\n|,|，/).map(item => item.trim()).filter(Boolean);
+}
 
-    refresh().catch(error => toast(error.message));
-    const events = new EventSource("/events");
-    events.onmessage = event => render(JSON.parse(event.data));
-    events.onerror = () => setTimeout(refresh, 3000);
+function renderConfig(data) {
+  if (state.configDirty) return;
+  const model = document.getElementById("model-form");
+  const config = data.configuration || {};
+  model.backend.value = config.backend || "zhipu";
+  model.model.value = config.model || "";
+  model.zhipu_model.value = config.zhipu_model || "";
+  model.openai_model.value = config.openai_model || "";
+  model.advice_backend.value = config.advice_backend || "zhipu";
+  model.debate_rounds.value = config.debate_rounds || 1;
+
+  const source = document.getElementById("source-form");
+  source.official_sources.value = (data.official_sources || []).map(item => `${item.name || ""} | ${item.url || ""} | ${(item.topics || []).join(", ")}`).join("\n");
+  const social = data.social_sources || {};
+  source.x_keywords.value = ((social.x || {}).keywords || []).join("\n");
+  source.x_accounts.value = ((social.x || {}).accounts || []).join("\n");
+  source.xiaohongshu_keywords.value = ((social.xiaohongshu || {}).keywords || []).join("\n");
+  source.xiaohongshu_accounts.value = ((social.xiaohongshu || {}).accounts || []).join("\n");
+  source.fear_value.value = (data.fear_greed || {}).value || "";
+  source.fear_label.value = (data.fear_greed || {}).label || "";
+}
+
+function render(data) {
+  state.data = data;
+  document.getElementById("clock").textContent = `更新时间 ${formatTime(data.generated_at)} ${data.display_timezone}`;
+  renderMarketStatus(data.markets);
+  renderOverview(data);
+  renderLatestReport(data.latest_report);
+  renderSuggestions(data.suggestions || []);
+  renderTracking(data);
+  renderArchive(data.reports || []);
+  renderHoldingConfig(data.holdings || []);
+  renderTopicConfig(data.focus_topics || []);
+  renderConfig(data);
+}
+
+async function refresh() {
+  const response = await fetch("/api/state");
+  render(await response.json());
+}
+
+document.querySelectorAll(".tab-button").forEach(button => {
+  button.addEventListener("click", () => openTab(button.dataset.tab));
+});
+
+document.querySelectorAll("form").forEach(form => {
+  form.addEventListener("input", () => { state.configDirty = true; });
+  form.addEventListener("reset", () => { setTimeout(() => { state.configDirty = false; render(state.data); }, 0); });
+});
+
+document.getElementById("model-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  await postJson("/api/model-config", Object.fromEntries(form.entries()));
+  state.configDirty = false;
+  toast("模型配置已保存");
+  await refresh();
+});
+
+document.getElementById("holding-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  await postJson("/api/holdings", {
+    market: form.get("market"),
+    ticker: form.get("ticker"),
+    symbol: form.get("symbol"),
+    company: form.get("company"),
+    themes: lines(form.get("themes"))
+  });
+  event.target.reset();
+  state.configDirty = false;
+  toast("持仓已保存");
+  await refresh();
+});
+
+document.getElementById("topic-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  await postJson("/api/topics", {
+    id: form.get("id"),
+    name: form.get("name"),
+    keywords: lines(form.get("keywords"))
+  });
+  event.target.reset();
+  state.configDirty = false;
+  toast("Topic 已保存");
+  await refresh();
+});
+
+document.getElementById("source-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  const official = String(form.get("official_sources") || "").split(/\n/).map(line => line.trim()).filter(Boolean).map(line => {
+    const parts = line.split("|").map(part => part.trim());
+    return {type: "rss", enabled: true, name: parts[0], url: parts[1], topics: lines(parts[2] || ""), allowed_domains: []};
+  }).filter(item => item.name && item.url);
+  await postJson("/api/sources", {
+    official_sources: official,
+    social_sources: {
+      x: {enabled: true, keywords: lines(form.get("x_keywords")), accounts: lines(form.get("x_accounts")), manual_posts: (state.data.social_sources?.x?.manual_posts || [])},
+      xiaohongshu: {enabled: true, keywords: lines(form.get("xiaohongshu_keywords")), accounts: lines(form.get("xiaohongshu_accounts")), manual_posts: (state.data.social_sources?.xiaohongshu?.manual_posts || [])}
+    },
+    fear_greed: {value: form.get("fear_value"), label: form.get("fear_label")}
+  });
+  state.configDirty = false;
+  toast("来源配置已保存");
+  await refresh();
+});
+
+document.getElementById("run-report").addEventListener("click", async () => {
+  toast("正在生成报告");
+  await postJson("/api/report/run", {});
+  await refresh();
+});
+
+document.getElementById("run-suggestion").addEventListener("click", async () => {
+  toast("正在刷新建议");
+  await postJson("/api/suggestion/run", {});
+  await refresh();
+});
+
+refresh().catch(error => toast(error.message));

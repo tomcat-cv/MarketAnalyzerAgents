@@ -3,59 +3,59 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Market Analyzer Workbench</title>
+  <title>Market Analyzer</title>
   <link rel="stylesheet" href="/static/styles.css">
-
 </head>
 <body>
   <header>
     <div>
       <h1>Market Analyzer</h1>
-      <div class="subtle" id="clock">正在连接本地工作台</div>
+      <div class="subtle" id="clock">正在读取本地配置</div>
     </div>
     <div class="status-strip" id="market-status"></div>
   </header>
   <nav class="tabs" aria-label="主页面">
     <button class="tab-button active" data-tab="home" type="button">首页</button>
+    <button class="tab-button" data-tab="archive" type="button">历史归档</button>
     <button class="tab-button" data-tab="config" type="button">配置</button>
   </nav>
   <main>
     <div class="tab-panel" id="tab-home">
       <div class="overview-grid" id="overview"></div>
       <div class="home-grid">
-        <div>
-          <section>
-            <div class="section-head">
-              <h2>持仓概览</h2>
-              <span class="subtle" id="holding-count"></span>
-            </div>
-            <div id="holdings"></div>
-          </section>
-          <section>
-            <div class="section-head">
-              <h2>关注 Topic</h2>
-              <span class="subtle" id="topic-count"></span>
-            </div>
-            <div id="topics"></div>
-          </section>
-        </div>
+        <section>
+          <div class="section-head">
+            <h2>当天市场分析报告</h2>
+            <button id="run-report" type="button">立即生成</button>
+          </div>
+          <article class="markdown-body" id="latest-report"></article>
+        </section>
         <aside>
           <section>
             <div class="section-head">
-              <h2>盘中提醒</h2>
-              <span class="subtle" id="alert-count"></span>
+              <h2>盘中操作建议</h2>
+              <button class="secondary" id="run-suggestion" type="button">刷新建议</button>
             </div>
-            <div class="alerts" id="alerts"></div>
+            <div class="alerts" id="suggestions"></div>
           </section>
           <section>
             <div class="section-head">
-              <h2>盘前简报</h2>
-              <a class="button-link secondary" href="/briefs/" target="_blank">打开目录</a>
+              <h2>持仓与 Topic</h2>
+              <span class="subtle" id="tracking-count"></span>
             </div>
-            <div class="brief-list" id="briefs"></div>
+            <div id="tracking"></div>
           </section>
         </aside>
       </div>
+    </div>
+    <div class="tab-panel" id="tab-archive" hidden>
+      <section>
+        <div class="section-head">
+          <h2>历史报告</h2>
+          <span class="subtle">state/analysis/reports</span>
+        </div>
+        <div class="brief-list" id="reports"></div>
+      </section>
     </div>
     <div class="tab-panel" id="tab-config" hidden>
       <div class="config-grid">
@@ -68,7 +68,7 @@
             <form id="model-form">
               <div class="form-grid">
                 <div>
-                  <label>盘前后端</label>
+                  <label>报告后端</label>
                   <select name="backend">
                     <option value="zhipu">智谱</option>
                     <option value="openai">OpenAI</option>
@@ -88,11 +88,11 @@
                   <input name="openai_model" placeholder="gpt-5.4">
                 </div>
                 <div>
-                  <label>盘中分析后端</label>
+                  <label>盘中建议后端</label>
                   <select name="advice_backend">
-                    <option value="conservative">保守规则</option>
                     <option value="zhipu">智谱</option>
                     <option value="openai">OpenAI</option>
+                    <option value="dry-run">Dry run</option>
                   </select>
                 </div>
                 <div>
@@ -107,8 +107,8 @@
           </section>
           <section>
             <div class="section-head">
-              <h2>配置持仓</h2>
-              <span class="subtle">config/sources.json</span>
+              <h2>持仓配置</h2>
+              <span class="subtle" id="holding-config-count"></span>
             </div>
             <form id="holding-form">
               <div class="form-grid">
@@ -121,19 +121,19 @@
                 </div>
                 <div>
                   <label>代码</label>
-                  <input name="ticker" placeholder="NVDA / 600519" required>
+                  <input name="ticker" required>
                 </div>
                 <div>
                   <label>行情代码</label>
-                  <input name="symbol" placeholder="留空默认等于代码">
+                  <input name="symbol">
                 </div>
                 <div>
                   <label>名称</label>
-                  <input name="company" placeholder="NVIDIA">
+                  <input name="company">
                 </div>
                 <div class="wide">
-                  <label>关注主题</label>
-                  <textarea name="themes" placeholder="AI accelerators&#10;data-center revenue"></textarea>
+                  <label>相关主题</label>
+                  <textarea name="themes" placeholder="AI 算力&#10;出口管制"></textarea>
                 </div>
               </div>
               <div class="actions">
@@ -141,38 +141,69 @@
                 <button type="submit">保存持仓</button>
               </div>
             </form>
-          </section>
-          <section>
-            <div class="section-head">
-              <h2>持仓列表</h2>
-              <span class="subtle" id="holding-config-count"></span>
-            </div>
             <div id="holding-config-list"></div>
           </section>
         </div>
         <div>
           <section>
             <div class="section-head">
-              <h2>配置 Topic</h2>
-              <span class="subtle">focus_topics</span>
+              <h2>资讯与社媒来源</h2>
+              <span class="subtle">官方资讯 / X / 小红书</span>
+            </div>
+            <form id="source-form">
+              <div class="form-grid">
+                <div class="wide">
+                  <label>官方 RSS 来源，每行：名称 | URL | 主题逗号分隔</label>
+                  <textarea name="official_sources"></textarea>
+                </div>
+                <div>
+                  <label>X 关键词</label>
+                  <textarea name="x_keywords"></textarea>
+                </div>
+                <div>
+                  <label>X 博主</label>
+                  <textarea name="x_accounts"></textarea>
+                </div>
+                <div>
+                  <label>小红书关键词</label>
+                  <textarea name="xiaohongshu_keywords"></textarea>
+                </div>
+                <div>
+                  <label>小红书博主</label>
+                  <textarea name="xiaohongshu_accounts"></textarea>
+                </div>
+                <div>
+                  <label>恐惧贪婪指数</label>
+                  <input name="fear_value" placeholder="0-100">
+                </div>
+                <div>
+                  <label>指数标签</label>
+                  <input name="fear_label" placeholder="Fear / Neutral / Greed">
+                </div>
+              </div>
+              <div class="actions">
+                <button type="submit">保存来源</button>
+              </div>
+            </form>
+          </section>
+          <section>
+            <div class="section-head">
+              <h2>关注 Topic</h2>
+              <span class="subtle" id="topic-config-count"></span>
             </div>
             <form id="topic-form">
               <div class="form-grid">
                 <div>
                   <label>ID</label>
-                  <input name="id" placeholder="semiconductors" required>
+                  <input name="id" required>
                 </div>
                 <div>
                   <label>名称</label>
-                  <input name="name" placeholder="半导体">
+                  <input name="name">
                 </div>
                 <div class="wide">
-                  <label>分组</label>
-                  <textarea name="segments" placeholder="美股半导体 | 主题:半导体:美股&#10;A股半导体 | 主题:半导体:A股"></textarea>
-                </div>
-                <div class="wide">
-                  <label>跟踪工具</label>
-                  <textarea name="instruments" placeholder="^SOX | PHLX Semiconductor Index | 主题:半导体:美股&#10;512480.SS | A股半导体ETF代理 | 主题:半导体:A股"></textarea>
+                  <label>关键词</label>
+                  <textarea name="keywords"></textarea>
                 </div>
               </div>
               <div class="actions">
@@ -180,12 +211,6 @@
                 <button type="submit">保存 Topic</button>
               </div>
             </form>
-          </section>
-          <section>
-            <div class="section-head">
-              <h2>Topic 列表</h2>
-              <span class="subtle" id="topic-config-count"></span>
-            </div>
             <div id="topic-config-list"></div>
           </section>
         </div>
@@ -194,6 +219,5 @@
   </main>
   <div class="toast" id="toast"></div>
   <script src="/static/app.js"></script>
-
 </body>
 </html>

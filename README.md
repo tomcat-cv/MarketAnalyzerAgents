@@ -1,14 +1,15 @@
 # Market Analyzer Agents
 
-面向 A 股和美股持仓的本地研究与跟踪程序。系统按北京时间展示用户可见时间，同时分别计算 A 股和美股交易状态。
+本地股票交易辅助系统，面向 A 股和美股持仓。当前一期以 HTML 工作台为主界面，支持配置、定时市场分析报告、历史归档和盘中操作建议。
 
 ## 核心能力
 
-- 盘前采集可靠信源，生成可追溯证据包和 Markdown 简报。
-- 盘中轮询行情，保存 quote/bar，结合已验证资讯输出可审计建议。
-- 模型建议采用固定讨论协议：行情分析、新闻分析、看多/看空、风险复核、组合经理。
-- 手工记录实际操作，并在盘后用当时可见建议和后续行情生成复盘。
-- 建议、操作、讨论和 outbox 事件保存在本地 SQLite/JSONL，便于审计。
+- 在网页中配置分析模型、持仓、关注 Topic、官方资讯来源、X/小红书来源和恐惧贪婪指数。
+- 默认按北京时间 08:00、14:00、20:00 生成市场分析报告。
+- 首页展示当天最新报告，历史归档页查看过往报告。
+- 官方资讯和社媒情绪分开分析；官方资讯保留可读链接。
+- 社媒分析支持关键词和指定博主，统计积极、消极、中性情绪。
+- 盘中建议单独展示，结合行情、资讯、社媒和风险环境生成。
 
 ## 安装
 
@@ -22,32 +23,25 @@ cp .env.example .env
 ## 常用命令
 
 ```bash
-marketanalyzeragents run --backend zhipu
-marketanalyzeragents run --market a_share --backend zhipu
-marketanalyzeragents run --market us_equities --backend zhipu
-marketanalyzeragents run --backend dry-run
-marketanalyzeragents collect
-marketanalyzeragents market-status --market us_equities
-marketanalyzeragents intraday --market us_equities --watch
-marketanalyzeragents operation --market us_equities --symbol NVDA --action buy --quantity 10 --price 100
-marketanalyzeragents review --market us_equities
-marketanalyzeragents service --markets a_share us_equities
 marketanalyzeragents web --host 127.0.0.1 --port 8765
+marketanalyzeragents report --backend zhipu
+marketanalyzeragents report --backend dry-run
+marketanalyzeragents suggest --backend zhipu
+marketanalyzeragents service
 ```
 
-## 市场配置
+## 配置文件
 
-- `config/markets/a_share.json`：A 股盘前简报、交易日覆盖和盘中轮询配置；默认北京时间 09:00 生成简报。
-- `config/markets/us_equities.json`：美股盘前简报、交易日覆盖和盘中轮询配置；默认北京时间 20:00 生成简报。
-- `config/sources.json`：共享证据源、公共主题和组合持仓；黄金、白银、宏观等公共主题会被两套市场简报复用。
+- `config/settings.json`：模型、报告时间、市场状态、行情源等系统配置。
+- `config/sources.json`：持仓、关注 Topic、官方来源、社媒来源、恐惧贪婪指数。
+- `config/markets/a_share.json`：A 股市场日历和轮询配置。
+- `config/markets/us_equities.json`：美股市场日历和轮询配置。
 
 ## 运行数据
 
-- `briefs/`：盘前 Markdown 简报和 source log。
-- `runs/`：每次运行的证据、prompt、模型响应和校验记录。
-- `state/portfolio.db`：quotes、price bars、suggestions、operations、agent discussions。
-- `state/conversation-outbox.jsonl`：传输中立事件 outbox。
-- Web 工作台：默认 `http://127.0.0.1:8765`，提供持仓配置、盘前简报入口和盘中提醒流。
+- `state/analysis/reports/`：市场分析报告 JSON 和 HTML。
+- `state/analysis/suggestions/`：盘中操作建议 JSON。
+- Web 工作台默认地址：`http://127.0.0.1:8765`。
 
 ## 测试
 

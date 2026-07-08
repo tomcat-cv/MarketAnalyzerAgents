@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
+import json
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
@@ -15,18 +15,16 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "lookback_hours": 24,
     "language": "zh-CN",
     "max_items": 12,
-    "context_path": "config/research-context.md",
     "sources_path": "config/sources.json",
     "market_config_paths": {
         "a_share": "config/markets/a_share.json",
         "us_equities": "config/markets/us_equities.json",
     },
-    "output_dir": "briefs",
-    "runs_dir": "runs",
     "state": {
-        "database_path": "state/portfolio.db",
-        "conversation_outbox": "state/conversation-outbox.jsonl",
+        "analysis_dir": "state/analysis",
     },
+    "report_schedule": ["08:00", "14:00", "20:00"],
+    "intraday_suggestion_interval_seconds": 1800,
     "markets": {
         "a_share": {
             "calendar": {"provider": "config", "path": "", "strict": False},
@@ -45,16 +43,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "history_interval": "1d",
     },
     "intraday_agents": {
-        "advice_backend": "conservative",
+        "advice_backend": "zhipu",
         "debate_rounds": 1,
-        "max_evidence_items_per_symbol": 8,
-        "price_history_points": 20,
-    },
-    "schedule": {
-        "mode": "daily",
-        "time": "06:00",
-        "interval_minutes": 1440,
-        "run_on_start": False,
     },
     "collectors": {
         "user_agent": "market-analyzer-agents/0.1 research@example.com",
@@ -62,14 +52,6 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "max_retries": 2,
         "retry_backoff_seconds": 1.0,
         "max_evidence_items": 200,
-    },
-    "news_collection": {
-        "interval_seconds": 900,
-    },
-    "service": {
-        "health_path": "state/service-health.json",
-        "max_backoff_seconds": 300,
-        "retention_days": 120,
     },
     "openai": {
         "api_base": "https://api.openai.com/v1",
@@ -132,23 +114,16 @@ def load_settings(root: Path) -> Dict[str, Any]:
             settings["model"] = os.environ["OPENAI_MODEL"]
     if os.environ.get("ZHIPU_API_BASE"):
         settings["zhipu"]["api_base"] = os.environ["ZHIPU_API_BASE"]
-    if os.environ.get("MARKET_ANALYZER_AGENTS_SCHEDULE_MODE"):
-        settings["schedule"]["mode"] = os.environ["MARKET_ANALYZER_AGENTS_SCHEDULE_MODE"]
-    if os.environ.get("MARKET_ANALYZER_AGENTS_SCHEDULE_TIME"):
-        settings["schedule"]["time"] = os.environ["MARKET_ANALYZER_AGENTS_SCHEDULE_TIME"]
-    if os.environ.get("MARKET_ANALYZER_AGENTS_INTERVAL_MINUTES"):
-        settings["schedule"]["interval_minutes"] = int(os.environ["MARKET_ANALYZER_AGENTS_INTERVAL_MINUTES"])
-    if os.environ.get("MARKET_ANALYZER_AGENTS_RUN_ON_START"):
-        settings["schedule"]["run_on_start"] = os.environ["MARKET_ANALYZER_AGENTS_RUN_ON_START"].strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-    if os.environ.get("MARKET_ANALYZER_AGENTS_HEALTH_PATH"):
-        settings["service"]["health_path"] = os.environ["MARKET_ANALYZER_AGENTS_HEALTH_PATH"].strip()
-    if os.environ.get("MARKET_ANALYZER_AGENTS_RETENTION_DAYS"):
-        settings["service"]["retention_days"] = int(os.environ["MARKET_ANALYZER_AGENTS_RETENTION_DAYS"])
+    if os.environ.get("MARKET_ANALYZER_AGENTS_REPORT_SCHEDULE"):
+        settings["report_schedule"] = [
+            item.strip()
+            for item in os.environ["MARKET_ANALYZER_AGENTS_REPORT_SCHEDULE"].split(",")
+            if item.strip()
+        ]
+    if os.environ.get("MARKET_ANALYZER_AGENTS_INTRADAY_INTERVAL_SECONDS"):
+        settings["intraday_suggestion_interval_seconds"] = int(
+            os.environ["MARKET_ANALYZER_AGENTS_INTRADAY_INTERVAL_SECONDS"]
+        )
 
     return settings
 
@@ -183,31 +158,6 @@ def resolve_path(root: Path, value: str | Path) -> Path:
     if path.is_absolute():
         return path
     return root / path
-
-
-def read_optional_text(path: Path) -> str:
-    if not path.exists():
-        return ""
-    return path.read_text(encoding="utf-8")
-
-
-def read_inputs(root: Path, settings: Mapping[str, Any]) -> Dict[str, Any]:
-    context_path = resolve_path(root, settings["context_path"])
-    sources_path = resolve_path(root, settings["sources_path"])
-    sources = load_json(sources_path, {})
-    if isinstance(sources, Mapping):
-        from .portfolio_snapshots import apply_current_portfolio_snapshots
-
-        sources = apply_current_portfolio_snapshots(root, settings, sources)
-
-    return {
-        "context": read_optional_text(context_path),
-        "sources": sources if isinstance(sources, dict) else {},
-        "paths": {
-            "context": str(context_path),
-            "sources": str(sources_path),
-        },
-    }
 
 
 def ensure_dirs(paths: Iterable[Path]) -> None:

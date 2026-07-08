@@ -1,35 +1,38 @@
 from __future__ import annotations
 
-import json
 import math
 import statistics
 import urllib.parse
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from .collectors import CollectionError, HttpClient
-from .portfolio_store import PortfolioStore, PriceBar, Quote
 
 
-class ConversationPort(Protocol):
-    def deliver(self, message: Mapping[str, Any]) -> None: ...
+@dataclass(frozen=True)
+class Quote:
+    market: str
+    symbol: str
+    observed_at: str
+    price: float
+    previous_close: float | None = None
+    volume: float | None = None
+    source: str = "unknown"
 
 
-class JsonlConversationPort:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def deliver(self, message: Mapping[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(dict(message), ensure_ascii=False) + "\n")
-
-
-def build_outbox(root: Path, settings: Mapping[str, Any]) -> ConversationPort:
-    state = settings.get("state", {})
-    return JsonlConversationPort(root / state.get("conversation_outbox", "state/conversation-outbox.jsonl"))
+@dataclass(frozen=True)
+class PriceBar:
+    market: str
+    symbol: str
+    interval: str
+    observed_at: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float | None = None
+    source: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -215,65 +218,3 @@ def fetch_market_data(
     settings: Mapping[str, Any],
 ) -> MarketData:
     return build_market_data_provider(client, settings).fetch(market, symbol)
-
-
-def market_history_payload(data: MarketData, limit: int) -> list[dict[str, Any]]:
-    rows = [asdict(bar) for bar in data.history[-limit:]]
-    rows.append({"type": "history_metrics", **data.metrics})
-    return rows
-
-
-def build_suggestion(store: PortfolioStore, quote: Quote, evidence_ids: Sequence[str] = ()) -> dict[str, Any]:
-    rows = store.recent_quotes(quote.market, quote.symbol, 2)
-    baseline = quote.previous_close
-    if len(rows) > 1:
-        baseline = float(rows[1]["price"])
-    change_pct = ((quote.price / baseline) - 1) * 100 if baseline else 0.0
-    material = abs(change_pct) >= 2.0
-    return {
-        "market": quote.market,
-        "symbol": quote.symbol,
-        "created_at": quote.observed_at,
-        "action": "观察",
-        "confidence": "中" if material and evidence_ids else "低",
-        "rationale": (
-            f"价格相对可比基准变化 {change_pct:+.2f}%。"
-            + (
-                "存在已验证资讯，但未经过模型或策略裁决，未形成操作建议。"
-                if evidence_ids
-                else "缺少同期已验证资讯，不生成买卖方向。"
-            )
-        ),
-        "evidence_ids": list(evidence_ids),
-        "invalidation": "行情数据过期、交易时段结束或出现新的公司/宏观证据时重新评估。",
-        "price_change_pct": round(change_pct, 4),
-        "signal": "material_price_move" if material else "routine_poll",
-        "decision_source": "deterministic_observation",
-    }
-
-
-def should_run_agent_debate(suggestion: Mapping[str, Any]) -> bool:
-    """Only spend model calls on events that can change a user's decision."""
-    return bool(suggestion.get("evidence_ids"))
-
-
-def should_emit_suggestion(
-    suggestion: Mapping[str, Any],
-    *,
-    emit_low_signal: bool = False,
-) -> bool:
-    """Suppress observations that have no verified evidence by default."""
-    if emit_low_signal:
-        return True
-    if (
-        suggestion.get("decision_source") == "deterministic_observation"
-        and suggestion.get("action") == "观察"
-    ):
-        return False
-    if not suggestion.get("evidence_ids"):
-        return suggestion.get("action") != "观察"
-    if suggestion.get("action") != "观察":
-        return True
-    if suggestion.get("confidence") != "低":
-        return True
-    return False

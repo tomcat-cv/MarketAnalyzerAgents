@@ -3,16 +3,7 @@ import urllib.error
 import unittest
 from unittest.mock import patch
 
-from marketanalyzeragents.collectors import (
-    collect_evidence,
-    collect_cninfo_announcements,
-    collect_rss_items,
-    collect_sec_filings,
-    collect_yahoo_market_snapshot,
-    configured_company_rss_feeds,
-    HttpClient,
-    resolve_research_window,
-)
+from marketanalyzeragents.collectors import HttpClient, collect_rss_items, resolve_research_window
 
 
 class FakeClient:
@@ -25,36 +16,6 @@ class FakeClient:
 <description>Verified summary</description>
 </item></channel></rss>"""
 
-    def get_json(self, url):
-        if url.endswith("company_tickers.json"):
-            return {"0": {"ticker": "NVDA", "cik_str": 1045810}}
-        return {
-            "name": "NVIDIA CORP",
-            "filings": {
-                "recent": {
-                    "form": ["8-K"],
-                    "filingDate": ["2026-06-04"],
-                    "reportDate": ["2026-06-04"],
-                    "accessionNumber": ["0001045810-26-000001"],
-                    "primaryDocument": ["nvda-8k.htm"],
-                    "primaryDocDescription": ["Current report"],
-                }
-            },
-        }
-
-    def post_form_json(self, url, values, headers):
-        return {
-            "announcements": [
-                {
-                    "secCode": "688001",
-                    "secName": "测试公司",
-                    "announcementTitle": "关于<em>半导体</em>项目的公告",
-                    "announcementTime": 1780560000000,
-                    "adjunctUrl": "finalpage/2026-06-04/test.PDF",
-                }
-            ]
-        }
-
 
 class NoSummaryFeedClient(FakeClient):
     def request_bytes(self, url, **kwargs):
@@ -66,39 +27,8 @@ class NoSummaryFeedClient(FakeClient):
 </item></channel></rss>"""
 
 
-class SecDocumentClient(FakeClient):
-    def get_text(self, url):
-        return "<html><body><h1>Current report</h1><p>" + ("Verified filing detail. " * 20) + "</p></body></html>"
-
-
-class YahooClient:
-    def get_json(self, url):
-        return {
-            "chart": {
-                "result": [
-                    {
-                        "meta": {"currency": "USD"},
-                        "timestamp": [1780473600, 1780560000],
-                        "indicators": {
-                            "quote": [
-                                {
-                                    "close": [100.0, 102.0],
-                                    "high": [101.0, 103.0],
-                                    "low": [99.0, 100.0],
-                                    "volume": [1000, 1200],
-                                }
-                            ]
-                        },
-                    }
-                ],
-                "error": None,
-            }
-        }
-
-
 class CollectorTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.client = FakeClient()
         self.cutoff = datetime(2026, 6, 3, tzinfo=timezone.utc)
 
     def test_http_client_retries_transient_network_failures(self) -> None:
@@ -121,7 +51,7 @@ class CollectorTests(unittest.TestCase):
             return Response()
 
         client = HttpClient("test-agent", max_retries=1, retry_backoff_seconds=0)
-        with patch("marketanalyzeragents.collectors.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("marketanalyzeragents.collectors_core.urllib.request.urlopen", side_effect=fake_urlopen):
             body = client.request_bytes("https://example.com/feed")
 
         self.assertEqual(body, b"ok")
@@ -129,7 +59,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_collects_allowed_rss_items(self) -> None:
         items = collect_rss_items(
-            client=self.client,
+            client=FakeClient(),
             feed={
                 "name": "Official Feed",
                 "url": "https://official.example/feed.xml",
@@ -156,35 +86,6 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].evidence_level, "title_only")
 
-    def test_sec_document_text_upgrades_filing_to_summary_evidence(self) -> None:
-        items = collect_sec_filings(
-            client=SecDocumentClient(),
-            sources={
-                "portfolios": {
-                    "us_equities": {"holdings": [{"ticker": "NVDA", "themes": ["AI"]}]}
-                }
-            },
-            config={
-                "forms": ["8-K"],
-                "max_per_company": 2,
-                "fetch_document_text": True,
-                "min_document_chars": 20,
-            },
-            cutoff=self.cutoff,
-        )
-        self.assertEqual(items[0].evidence_level, "summary")
-        self.assertIn("Verified filing detail", items[0].content)
-
-    def test_collects_cninfo_announcement_titles(self) -> None:
-        items = collect_cninfo_announcements(
-            client=self.client,
-            config={"queries": ["半导体"], "max_per_query": 5},
-            cutoff=self.cutoff,
-        )
-        self.assertEqual(len(items), 1)
-        self.assertIn("半导体", items[0].title)
-        self.assertTrue(items[0].url.endswith(".PDF"))
-
     def test_previous_day_window_starts_at_local_midnight(self) -> None:
         china_tz = timezone(timedelta(hours=8))
         start, end, mode = resolve_research_window(
@@ -197,7 +98,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_rss_excludes_items_after_run_time(self) -> None:
         items = collect_rss_items(
-            client=self.client,
+            client=FakeClient(),
             feed={
                 "name": "Official Feed",
                 "url": "https://official.example/feed.xml",
@@ -208,118 +109,6 @@ class CollectorTests(unittest.TestCase):
         )
         self.assertEqual(items, [])
 
-    def test_collects_yahoo_market_snapshot_as_summary(self) -> None:
-        items = collect_yahoo_market_snapshot(
-            client=YahooClient(),
-            instrument={"symbol": "^GSPC", "name": "S&P 500", "topics": ["美股整体市场"]},
-            cutoff=datetime(2026, 6, 3, tzinfo=timezone.utc),
-            window_end=datetime(2026, 6, 5, tzinfo=timezone.utc),
-        )
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0].evidence_level, "summary")
-        self.assertIn("+2.00%", items[0].content)
-        self.assertIn("Window range", items[0].content)
-        self.assertTrue(items[0].url.startswith("https://query1.finance.yahoo.com/v8/finance/chart/"))
-        self.assertEqual(items[0].display_url, "https://finance.yahoo.com/quote/%5EGSPC")
-
-    def test_collect_evidence_adds_configured_holding_price_snapshots(self) -> None:
-        pack = collect_evidence(
-            settings={
-                "timezone": "UTC",
-                "freshness_window": "rolling_hours",
-                "lookback_hours": 72,
-                "collectors": {"max_evidence_items": 20},
-            },
-            sources={
-                "portfolios": {
-                    "us_equities": {
-                        "holdings": [
-                            {
-                                "ticker": "NVDA",
-                                "company": "NVIDIA",
-                                "themes": ["AI infrastructure"],
-                            }
-                        ]
-                    }
-                },
-                "collectors": {
-                    "yahoo_market_snapshots": {"enabled": True, "instruments": []},
-                    "sec_filings": {"enabled": False},
-                    "rss_feeds": [],
-                    "cninfo": {"enabled": False},
-                    "finnhub": {"enabled": False},
-                },
-            },
-            client=YahooClient(),
-            now=datetime(2026, 6, 5, tzinfo=timezone.utc),
-        )
-        self.assertEqual(len(pack.items), 1)
-        self.assertEqual(pack.items[0].matched_tickers, ["NVDA"])
-        self.assertIn("最新股价", pack.items[0].title)
-        self.assertIn("Latest available price", pack.items[0].content)
-        self.assertIn("holding_price_snapshot", {entry.category for entry in pack.coverage})
-
-    def test_company_rss_feeds_follow_current_holdings(self) -> None:
-        feeds = configured_company_rss_feeds(
-            {
-                "portfolios": {
-                    "us_equities": {
-                        "holdings": [{"ticker": "NVDA", "company": "NVIDIA"}]
-                    }
-                },
-                "collectors": {
-                    "company_rss_feeds": [
-                        {"name": "NVIDIA IR", "tickers": ["NVDA"]},
-                        {"name": "AMD IR", "tickers": ["AMD"]},
-                    ]
-                },
-            }
-        )
-
-        self.assertEqual([feed["name"] for feed in feeds], ["NVIDIA IR"])
-
-    def test_collect_evidence_only_queries_company_rss_for_configured_holdings(self) -> None:
-        pack = collect_evidence(
-            settings={
-                "timezone": "UTC",
-                "freshness_window": "rolling_hours",
-                "lookback_hours": 72,
-                "collectors": {"max_evidence_items": 20},
-            },
-            sources={
-                "portfolios": {
-                    "us_equities": {
-                        "holdings": [{"ticker": "NVDA", "company": "NVIDIA"}]
-                    }
-                },
-                "collectors": {
-                    "yahoo_market_snapshots": {"enabled": False},
-                    "sec_filings": {"enabled": False},
-                    "rss_feeds": [],
-                    "company_rss_feeds": [
-                        {
-                            "name": "NVIDIA IR",
-                            "url": "https://official.example/nvidia.xml",
-                            "allowed_domains": ["official.example"],
-                            "tickers": ["NVDA"],
-                        },
-                        {
-                            "name": "AMD IR",
-                            "url": "https://official.example/amd.xml",
-                            "allowed_domains": ["official.example"],
-                            "tickers": ["AMD"],
-                        },
-                    ],
-                    "cninfo": {"enabled": False},
-                    "finnhub": {"enabled": False},
-                },
-            },
-            client=FakeClient(),
-            now=datetime(2026, 6, 5, tzinfo=timezone.utc),
-        )
-
-        self.assertEqual([item.source_name for item in pack.items], ["NVIDIA IR"])
-        self.assertEqual([item.matched_tickers for item in pack.items], [["NVDA"]])
 
 if __name__ == "__main__":
     unittest.main()

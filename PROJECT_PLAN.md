@@ -1,195 +1,113 @@
-# Market Analyzer Agents - Project Plan
+# Market Analyzer Agents 项目计划
 
-## 1. Product Objective
+## 1. 产品目标
 
-Provide one program that follows a user's A-share and US equity portfolios
-through the full daily investment workflow:
+构建一个本地股票交易辅助系统，服务于 A 股和美股持仓。第一期交付 HTML 网页工作台，用于配置、报告展示、历史报告查看和盘中操作建议展示。
 
-- pre-market intelligence collection and briefing;
-- intraday quote tracking, context updates, and timed operation suggestions;
-- post-market ingestion of actual operations and evidence-based review.
+系统所有用户可见时间和计划任务都使用北京时间（`Asia/Shanghai`）。市场状态必须遵循各市场真实交易日历、交易时段、节假日和美股夏令时变化。
 
-All user-facing times and schedules use Beijing time (`Asia/Shanghai`).
-Market logic must still follow the official calendar and session rules of the
-relevant exchange. US sessions must be converted from `America/New_York`
-dynamically so daylight-saving changes are never encoded as fixed Beijing
-hours.
+产品定位是投资决策辅助，不做自动交易，不承诺收益。
 
-The product provides research support, not guaranteed returns or automated
-trade execution. Every suggestion must expose its evidence, timestamp, data
-freshness, confidence, and invalidation conditions.
+## 2. 主要用户流程
 
-## 2. Market Separation
+1. 用户在网页工作台配置持仓、关注 Topic、资讯来源、模型设置、报告时间和恐惧贪婪指数输入。
+2. 系统默认在北京时间 08:00、14:00、20:00 收集已配置来源并生成市场分析报告。
+3. 报告中官方资讯和社媒资讯分开呈现。
+4. 官方资讯如有链接，应展示可读来源链接。
+5. 社媒分析将用户配置博主的观点和关键词整体情绪分开呈现，并统计积极、消极、中性帖子数量。
+6. 首页展示当天最新报告。
+7. 归档页可打开历史报告。
+8. 市场交易时段内，系统结合当前行情上下文和已收集信息生成盘中操作建议。
 
-The system has two independent market workflows:
+## 3. 配置范围
 
-| Concern | A-share system | US equity system |
+网页配置页必须支持：
+
+- 分析模型服务商和模型名称；
+- 盘中建议模型服务商；
+- A 股和美股持仓；
+- 关注 Topic 及其关键词；
+- 官方 RSS 或来源列表；
+- X 平台关键词和指定博主；
+- 小红书关键词和指定博主；
+- 恐惧贪婪指数数值、标签和来源引用；
+- 默认报告时间。
+
+配置保存在本地 JSON 文件中，便于检查、版本管理和必要时手工编辑。
+
+## 4. 市场隔离
+
+A 股和美股市场状态必须保持独立：
+
+| 事项 | A 股 | 美股 |
 | --- | --- | --- |
-| Portfolio | A-share holdings and funds | US stocks and funds |
-| Calendar | Chinese exchange calendar | US exchange calendar |
-| Sessions | Auction, morning, midday break, afternoon | Pre-market if enabled, regular session, after-hours if enabled |
-| Disclosures | Chinese exchanges and statutory platforms | SEC and issuer filings |
-| Quotes | A-share data provider | US market data provider |
-| State | Independent freshness and signal state | Independent freshness and signal state |
+| 交易日历 | 中国交易所日历 | 美国交易所日历 |
+| 市场状态 | A 股交易时段 | 美股交易时段，并动态换算夏令时 |
+| 持仓 | A 股持仓 | 美股持仓 |
+| 行情代码 | A 股兼容代码 | 美股兼容代码 |
+| 新鲜度假设 | A 股来源时效 | 美股来源时效 |
 
-Shared components may include normalized portfolio records, evidence models,
-storage, audit logs, rendering, and model adapters. Cross-market information
-may be referenced as evidence, but one market's session state must never drive
-the other market's scheduler.
+可共享的部分包括配置读取、来源采集、证据模型、报告渲染、模型适配器和 UI 组件。
 
-## 3. Daily Workflow
+## 5. 来源采集
 
-### Pre-market
+官方来源和社媒来源是两个独立来源类别。
 
-Run separately before each market opens:
+官方来源要求：
 
-1. Load the relevant portfolio snapshot.
-2. Collect current company disclosures, reputable news, macro events, and
-   broad-market/theme data.
-3. Normalize, deduplicate, grade, and timestamp evidence.
-4. Produce a market-specific brief with portfolio impact and items to watch.
+- 优先使用一手或可靠来源；
+- 保留标题、来源名称、发布时间、摘要和可读 URL；
+- 报告正文避免展示不可读的原始 feed 链接；
+- 保留来源出处，便于追溯。
 
-### Intraday
+社媒来源要求：
 
-Run only while the relevant market session is active:
+- 支持按平台配置；
+- 支持关键词采集；
+- 支持指定博主追踪；
+- 将帖子情绪分类为积极、消极或中性；
+- 将博主分析和整体情绪分开总结。
 
-1. Poll current quotes at a configurable interval permitted by the provider.
-2. Persist normalized price points and obtain the required historical window.
-3. Detect deterministic changes such as return, volume, volatility, gaps, and
-   threshold crossings in code.
-4. Attach newly verified news and disclosures.
-5. At configured review intervals or material events, ask the model for a
-   judgment using only supplied portfolio, price features, and evidence.
-6. Emit a suggestion with action, confidence, rationale, evidence IDs,
-   freshness, and invalidation conditions.
+如果某个平台需要认证、付费权限或单独适配器，系统不能伪造不可获得的数据。
 
-Models must not perform routing, retries, market-session calculation, numeric
-feature calculation, or threshold detection.
+## 6. 报告要求
 
-### Post-market
+报告使用中文，要求简洁、可读、对投资决策有帮助。避免空泛内容、模板化废话和低价值表述。报告应包含：
 
-Run separately after each market closes:
+- 核心市场判断；
+- 带可读链接的官方资讯摘要；
+- 社媒情绪统计和解释；
+- 指定博主分析；
+- 持仓和关注 Topic 的影响；
+- 恐惧贪婪指数上下文；
+- 明确的观察项或操作上下文。
 
-1. Import user-confirmed trades and non-trade decisions through a stable
-   operation-ingestion interface.
-2. Reconstruct what information and suggestions were available at decision
-   time.
-3. Compare intended action, actual action, and subsequent market movement.
-4. Separate process quality from outcome quality to avoid hindsight bias.
-5. Save review findings as structured feedback for future briefs and
-   suggestions.
+## 7. 盘中操作建议
 
-## 4. Core Domain Boundaries
+盘中操作建议独立于定时市场报告。建议应结合：
 
-- `MarketCalendar`: exchange days and session state, rendered in Beijing time.
-- `Portfolio`: holdings, cash metadata, and portfolio snapshots by market.
-- `MarketData`: current quotes, historical bars, provider provenance, and
-  freshness.
-- `Evidence`: news and disclosure items with source quality and traceability.
-- `Signal`: deterministic price/news triggers.
-- `Suggestion`: model judgment with evidence and audit metadata.
-- `OperationRecord`: user-confirmed action; never inferred from a suggestion.
-- `Review`: post-market comparison and reusable feedback.
-- `ConversationPort`: transport-neutral delivery/input interface reserved for
-  a later technical design.
+- 当前行情上下文；
+- 已配置持仓和关注 Topic；
+- 最新官方资讯；
+- 最新社媒情绪和博主分析；
+- 恐惧贪婪指数上下文。
 
-Automated order placement is outside the current scope.
+建议应可读、偏行动导向，并包含触发背景、风险点和后续观察项。
 
-## 5. Delivery Phases
+## 8. 架构边界
 
-### Phase 0 - Pre-market foundation
+- HTML 网页工作台是第一期产品界面。
+- CLI 入口保持小而直接，只映射到产品动作：启动网页、生成报告、生成盘中建议、运行服务循环。
+- 确定性逻辑放在代码中，包括日历、时间戳、解析、路由、重试、来源过滤和数值计算。
+- 模型调用只用于判断、总结、分类、起草和抽取。
+- 本地生成的报告保存为 JSON 和可读 HTML。
+- 未来会话式入口必须通过窄接口扩展，不能改变核心报告和建议逻辑。
 
-Implemented:
+## 9. 未明确批准前不做的事项
 
-- independent collectors and evidence grading;
-- A-share and US portfolio configuration;
-- market/theme snapshots and source logs;
-- model-backed brief generation;
-- daily scheduler and Markdown output.
-
-### Implemented workflow foundation
-
-- independent A-share and US regular-session calculation in Beijing time;
-- SQLite quote, suggestion, and operation audit storage;
-- configurable A-share and US intraday polling with Yahoo reference quotes,
-  historical OHLCV backfill, volatility metrics, and SQLite persistence;
-- deterministic freshness/price context and conservative suggestions;
-- timed multi-agent discussion with market/news analysts, bull/bear
-  researchers, risk review, and portfolio-manager adjudication;
-- explicit operation ingestion and post-market review;
-- transport-neutral conversation interface with a JSONL outbox adapter.
-
-Production deployment still requires official holiday data, selected licensed
-quote providers, and an approved model-backed recommendation policy.
-
-### Phase 1 - Portfolio and market foundation (foundation implemented)
-
-- define normalized market, portfolio, operation, and timestamp schemas;
-- add official market-calendar/session abstraction;
-- separate A-share and US runtime configuration;
-- add durable local storage and migrations;
-- keep the existing pre-market command behavior compatible.
-
-Exit criterion: both markets can independently determine their current session
-in Beijing time and load a versioned portfolio snapshot.
-
-### Phase 2 - Intraday market data (reference implementation available)
-
-- select licensed/reliable quote providers for each market;
-- ingest current and historical bars with retry, rate-limit, and stale-data
-  handling;
-- calculate price features deterministically;
-- persist observations and expose replayable test fixtures.
-
-Exit criterion: a full market day can be replayed without network access and
-produces the same normalized observations and signals.
-
-### Phase 3 - Timed suggestions (foundation implemented)
-
-- combine deterministic signals with newly verified evidence;
-- add configurable review intervals and material-event triggers;
-- produce auditable, portfolio-aware suggestions;
-- enforce stale-data, missing-evidence, and market-closed safeguards.
-
-Exit criterion: every suggestion can be reproduced from stored inputs and
-contains no unsupported factual premise.
-
-### Phase 4 - Operations and post-market review (foundation implemented)
-
-- implement manual/imported operation ingestion;
-- connect operations to the suggestion and evidence available at decision
-  time;
-- generate separate A-share and US reviews;
-- feed structured lessons into later runs without treating outcomes as proof
-  that a decision process was correct or incorrect.
-
-Exit criterion: a user can reconcile a complete day from pre-market brief
-through intraday suggestions to post-market review.
-
-### Phase 5 - Conversation integration
-
-- keep the current JSONL outbox as the only built-in transport;
-- approve a delivery/input technical design before adding any chat vendor;
-- add authentication, user isolation, acknowledgement, and delivery retries
-  only after that design is approved.
-
-Exit criterion: changing conversation providers does not alter portfolio,
-market-data, suggestion, or review logic.
-
-## 6. Near-term Priorities
-
-1. Replace manually configured holidays with authoritative exchange calendars.
-2. Add schema migrations, replay fixtures, and provider retry/rate-limit
-   policies.
-3. Evaluate A-share and US quote providers against licensing, latency,
-   historical coverage, rate limits, and cost.
-4. Approve the production recommendation policy and conversation-channel design.
-
-## 7. Non-goals Until Explicitly Approved
-
-- automated brokerage execution;
-- guaranteed-return language or unqualified personalized financial advice;
-- fixed US Beijing trading hours that ignore daylight saving;
-- one shared scheduler/state machine for both markets;
-- model-generated numeric indicators that code can calculate;
-- a chat-vendor dependency inside core portfolio logic.
+- 自动券商下单；
+- 承诺收益或保证正确性；
+- 使用忽略夏令时的固定美股北京时间；
+- 伪造社媒平台数据；
+- 在核心分析逻辑中绑定特定聊天框架；
+- 让模型生成代码可以确定计算的数值指标。
