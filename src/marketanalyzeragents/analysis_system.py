@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.parse
@@ -44,6 +45,18 @@ class ContentPack:
     official: list[OfficialItem]
     social_posts: list[SocialPost]
     source_warnings: list[str]
+
+
+@dataclass
+class MarketQuoteRow:
+    market: str
+    symbol: str
+    name: str
+    price: float
+    previous_close: float | None
+    change_pct: float | None
+    observed_at: str
+    metrics: Mapping[str, float | None]
 
 
 def beijing_now(settings: Mapping[str, Any]) -> datetime:
@@ -117,6 +130,14 @@ def analysis_dir(root: Path, settings: Mapping[str, Any], key: str) -> Path:
         state = {}
     base = resolve_path(root, state.get("analysis_dir", "state/analysis"))
     return base / key
+
+
+def service_status_path(root: Path, settings: Mapping[str, Any]) -> Path:
+    state = settings.get("state", {})
+    if not isinstance(state, Mapping):
+        state = {}
+    base = resolve_path(root, state.get("analysis_dir", "state/analysis")).parent
+    return base / "service_status.json"
 
 
 def _string_list(value: Any) -> list[str]:
@@ -456,6 +477,74 @@ def current_market_sentiment(settings: Mapping[str, Any]) -> tuple[dict[str, Any
         }, [f"market_sentiment: {exc}"]
 
 
+def _market_quote_row(market: str, symbol: str, name: str, data: Any) -> MarketQuoteRow:
+    previous_close = data.quote.previous_close
+    change_pct = None
+    if previous_close:
+        change_pct = round(((data.quote.price / previous_close) - 1) * 100, 4)
+    return MarketQuoteRow(
+        market=market,
+        symbol=symbol,
+        name=name,
+        price=data.quote.price,
+        previous_close=previous_close,
+        change_pct=change_pct,
+        observed_at=data.quote.observed_at,
+        metrics=data.metrics,
+    )
+
+
+def collect_market_overview(
+    settings: Mapping[str, Any],
+    sources: Mapping[str, Any],
+) -> tuple[dict[str, list[MarketQuoteRow]], list[str]]:
+    overview_settings = settings.get("market_overview", {})
+    if not isinstance(overview_settings, Mapping):
+        overview_settings = {}
+    if overview_settings.get("enabled", True) is False:
+        return {"indices": [], "holdings": []}, []
+    client = _collector_client(settings)
+    market_data_settings = settings.get("market_data", {})
+    if not isinstance(market_data_settings, Mapping):
+        market_data_settings = {}
+    warnings: list[str] = []
+    indices: list[MarketQuoteRow] = []
+    configured_indices = overview_settings.get("indices", {})
+    if not isinstance(configured_indices, Mapping):
+        configured_indices = {}
+    for market in MARKETS:
+        raw_rows = configured_indices.get(market, [])
+        if not isinstance(raw_rows, list):
+            continue
+        for item in raw_rows:
+            if not isinstance(item, Mapping):
+                continue
+            symbol = str(item.get("symbol", "")).strip()
+            if not symbol:
+                continue
+            name = str(item.get("name", symbol)).strip() or symbol
+            try:
+                data = fetch_market_data(client, market, symbol, market_data_settings)
+            except Exception as exc:
+                warnings.append(f"market_overview index {market} {symbol}: {exc}")
+                continue
+            indices.append(_market_quote_row(market, symbol, name, data))
+    holdings: list[MarketQuoteRow] = []
+    for holding in configured_portfolio_holdings(sources):
+        market = str(holding.get("market", ""))
+        symbol = str(holding.get("symbol") or holding.get("ticker") or "").strip()
+        if not market or not symbol:
+            continue
+        name = str(holding.get("company") or holding.get("ticker") or symbol).strip()
+        try:
+            data = fetch_market_data(client, market, symbol, market_data_settings)
+        except Exception as exc:
+            warnings.append(f"market_overview holding {market} {symbol}: {exc}")
+            continue
+        holdings.append(_market_quote_row(market, symbol, name, data))
+    return {"indices": indices, "holdings": holdings}, warnings
+
+
 def collect_content(root: Path, settings: Mapping[str, Any], sources: Mapping[str, Any]) -> ContentPack:
     official, official_warnings = _collect_official(root, settings, sources)
     social_sources = _normalize_social_sources(
@@ -506,11 +595,41 @@ def _call_model(settings: Mapping[str, Any], *, system: str, user: str, backend:
     raise ValueError("backend must be zhipu, openai, or dry-run")
 
 
-def _report_fallback(pack: ContentPack, sources: Mapping[str, Any], run_at: datetime) -> str:
+def _format_change(value: float | None) -> str:
+    if value is None:
+        return "涨跌幅暂不可用"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:.2f}%"
+
+
+def _market_label(value: str) -> str:
+    return {"a_share": "A 股", "us_equities": "美股"}.get(value, value)
+
+
+def _quote_lines(rows: list[MarketQuoteRow], limit: int = 8) -> list[str]:
+    return [
+        (
+            f"- {row.name}（{_market_label(row.market)} {row.symbol}）："
+            f"{row.price:.2f}，较前收 {_format_change(row.change_pct)}，"
+            f"1个月表现 {_format_change(row.metrics.get('period_change_pct') if row.metrics else None)}。"
+        )
+        for row in rows[:limit]
+    ]
+
+
+def _report_fallback(
+    pack: ContentPack,
+    sources: Mapping[str, Any],
+    run_at: datetime,
+    market_overview: Mapping[str, list[MarketQuoteRow]] | None = None,
+) -> str:
     market_sentiment = sources.get("market_sentiment", {})
     sentiment_text = ""
     if isinstance(market_sentiment, Mapping) and market_sentiment.get("value") not in (None, ""):
         sentiment_text = f"{market_sentiment.get('value')} / {market_sentiment.get('label', '')}".strip()
+    overview = market_overview or {}
+    index_lines = _quote_lines(list(overview.get("indices", [])), 8)
+    holding_lines = _quote_lines(list(overview.get("holdings", [])), 8)
     official_lines = [
         f"- [{item.title}]({item.url})：{item.summary[:180]}"
         for item in pack.official[:8]
@@ -528,12 +647,18 @@ def _report_fallback(pack: ContentPack, sources: Mapping[str, Any], run_at: date
             "## 核心判断",
             "官方资讯和社媒反馈已按来源分层整理；盘中使用同一批信息作为建议上下文。",
             "",
+            "## 市场整体情况",
+            *(index_lines or ["- 指数行情暂不可用；请检查 market_data provider 或网络访问。"]),
+            "",
             "## 官方资讯",
             *(official_lines or ["- 当前窗口内没有新的官方链接进入报告。"]),
             "",
             "## 社媒情绪",
             f"- 帖子统计：积极 {sentiment['counts']['positive']}，消极 {sentiment['counts']['negative']}，中性 {sentiment['counts']['neutral']}；主导情绪 {sentiment['dominant']}。",
             *(author_lines or ["- 已保留博主分析区；配置账号后由社媒采集模块写入最新帖子。"]),
+            "",
+            "## 持仓和关注 Topic",
+            *(holding_lines or ["- 持仓行情暂不可用；当前报告仅使用配置的持仓和 Topic 作为新闻匹配上下文。"]),
             "",
             "## 市场情绪",
             f"- {sentiment_text or '市场情绪数据暂不可用；请检查行情、CBOE 或 FRED 数据源。'}",
@@ -547,11 +672,17 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
     run_at = beijing_now(settings)
     slot_value = slot or run_at.strftime("%H:%M")
     pack = collect_content(root, settings, sources)
+    market_overview, overview_warnings = collect_market_overview(settings, sources)
+    pack.source_warnings.extend(overview_warnings)
     market_sentiment, sentiment_warnings = current_market_sentiment(settings)
     pack.source_warnings.extend(sentiment_warnings)
     payload = {
         "holdings": configured_portfolio_holdings(sources),
         "topics": configured_topics(sources),
+        "market_overview": {
+            "indices": [item.__dict__ for item in market_overview["indices"]],
+            "holdings": [item.__dict__ for item in market_overview["holdings"]],
+        },
         "official": [item.__dict__ for item in pack.official],
         "social": [item.__dict__ for item in pack.social_posts],
         "social_summary": social_summary(pack.social_posts),
@@ -561,6 +692,7 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
     system = (
         "你是股票交易辅助系统的市场分析师。输出中文 Markdown，结构清晰，避免空泛套话。"
         "官方资讯必须用可读标题链接，不输出裸长 URL。社媒部分要区分博主观点和总体情绪。"
+        "必须先写市场整体情况，覆盖主要指数方向、持仓行情和关注 Topic/公司新闻的影响。"
         "不要写“证据不足无法给出建议”这类垃圾信息；没有材料时直接省略该分论点或说明待配置。"
     )
     user = json.dumps(payload, ensure_ascii=False, indent=2)
@@ -570,10 +702,10 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
             system=system,
             user=user,
             backend=backend,
-        ) or _report_fallback(pack, {**dict(sources), "market_sentiment": market_sentiment}, run_at)
+        ) or _report_fallback(pack, {**dict(sources), "market_sentiment": market_sentiment}, run_at, market_overview)
     except Exception as exc:
         pack.source_warnings.append(f"model: {exc}")
-        markdown = _report_fallback(pack, {**dict(sources), "market_sentiment": market_sentiment}, run_at)
+        markdown = _report_fallback(pack, {**dict(sources), "market_sentiment": market_sentiment}, run_at, market_overview)
     report_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{slot_value.replace(':', '')}"
     json_path = analysis_dir(root, settings, "reports") / f"{report_id}.json"
     html_path = analysis_dir(root, settings, "reports") / f"{report_id}.html"
@@ -586,6 +718,10 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
         "html_path": str(html_path),
         "official_count": len(pack.official),
         "social_count": len(pack.social_posts),
+        "market_overview": {
+            "indices": [item.__dict__ for item in market_overview["indices"]],
+            "holdings": [item.__dict__ for item in market_overview["holdings"]],
+        },
         "warnings": pack.source_warnings,
     }
     write_json(json_path, result)
@@ -729,6 +865,9 @@ def dashboard_state(root: Path) -> dict[str, Any]:
     social_sources = _normalize_social_sources(social, social, sources)
     topics = configured_topics(sources)
     market_sentiment, sentiment_warnings = current_market_sentiment(settings)
+    service_status = load_json(service_status_path(root, settings), {})
+    if not isinstance(service_status, Mapping):
+        service_status = {}
     return {
         "generated_at": beijing_now(settings).isoformat(timespec="seconds"),
         "display_timezone": str(settings.get("timezone", "Asia/Shanghai")),
@@ -742,6 +881,7 @@ def dashboard_state(root: Path) -> dict[str, Any]:
         "social_keywords": configured_social_keywords(sources),
         "market_sentiment": market_sentiment,
         "warnings": sentiment_warnings,
+        "service_status": dict(service_status),
         "latest_report": reports[0] if reports else None,
         "reports": reports,
         "suggestions": suggestions,
@@ -770,19 +910,43 @@ def _open_market_suggestion_interval(settings: Mapping[str, Any], market_states:
 def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = False) -> None:
     last_report_key = ""
     last_suggestion_key = ""
+    last_report_result: dict[str, Any] | None = None
     if run_on_start:
-        generate_market_report(root)
+        last_report_result = generate_market_report(root)
     while True:
         settings = load_settings(root)
         now = beijing_now(settings)
         schedule = settings.get("report_schedule", REPORT_SCHEDULES)
         if not isinstance(schedule, list):
             schedule = list(REPORT_SCHEDULES)
+        write_json_atomic(
+            service_status_path(root, settings),
+            {
+                "pid": os.getpid(),
+                "last_seen_at": now.isoformat(timespec="seconds"),
+                "report_schedule": schedule,
+                "last_report_key": last_report_key,
+                "last_report_id": last_report_result.get("id") if last_report_result else "",
+                "tick_seconds": tick_seconds,
+            },
+        )
         current_minute = now.strftime("%H:%M")
         current_day_key = now.strftime("%Y-%m-%d")
         if current_minute in schedule and last_report_key != f"{current_day_key} {current_minute}":
-            generate_market_report(root, slot=current_minute)
+            last_report_result = generate_market_report(root, slot=current_minute)
             last_report_key = f"{current_day_key} {current_minute}"
+            settings = load_settings(root)
+            write_json_atomic(
+                service_status_path(root, settings),
+                {
+                    "pid": os.getpid(),
+                    "last_seen_at": beijing_now(settings).isoformat(timespec="seconds"),
+                    "report_schedule": schedule,
+                    "last_report_key": last_report_key,
+                    "last_report_id": last_report_result.get("id"),
+                    "tick_seconds": tick_seconds,
+                },
+            )
         market_states = dashboard_state(root)["markets"]
         suggestion_interval = _open_market_suggestion_interval(settings, market_states)
         suggestion_key = now.strftime("%Y-%m-%d %H:%M")

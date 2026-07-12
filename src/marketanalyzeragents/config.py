@@ -42,6 +42,21 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
         "history_range": "6mo",
         "history_interval": "1d",
     },
+    "market_overview": {
+        "enabled": True,
+        "indices": {
+            "a_share": [
+                {"symbol": "000001.SS", "name": "上证指数"},
+                {"symbol": "399001", "name": "深证成指"},
+                {"symbol": "399006", "name": "创业板指"},
+            ],
+            "us_equities": [
+                {"symbol": "^GSPC", "name": "标普 500"},
+                {"symbol": "^IXIC", "name": "纳斯达克综合"},
+                {"symbol": "^DJI", "name": "道琼斯工业"},
+            ],
+        },
+    },
     "market_sentiment": {
         "enabled": True,
     },

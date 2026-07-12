@@ -86,14 +86,15 @@ function renderMarketStatus(markets) {
 function renderOverview(data) {
   const reports = data.reports || [];
   const suggestions = data.suggestions || [];
-  const social = data.social_sources || {};
   const sentiment = data.market_sentiment || {};
-  const sourceCount = (data.official_sources || []).length + Object.values(social).filter(item => item && item.enabled !== false).length;
+  const service = data.service_status || {};
+  const serviceSeenAt = service.last_seen_at ? Date.parse(service.last_seen_at) : NaN;
+  const serviceFresh = Number.isFinite(serviceSeenAt) && (Date.now() - serviceSeenAt) < Math.max(120000, (service.tick_seconds || 30) * 3000);
   document.getElementById("overview").innerHTML = `
     <div class="metric"><span>定时报告</span><strong>${esc((data.report_schedule || []).join(" / "))}</strong><small>北京时间</small></div>
     <div class="metric"><span>持仓</span><strong>${esc((data.holdings || []).length)}</strong><small>A 股与美股分开处理</small></div>
     <div class="metric"><span>市场情绪</span><strong>${esc(sentiment.value || "--")}</strong><small>${esc(sentiment.label || "自动刷新")}</small></div>
-    <div class="metric"><span>历史报告</span><strong>${esc(reports.length)}</strong><small>盘中建议 ${suggestions.length} 条</small></div>
+    <div class="metric"><span>自动服务</span><strong>${serviceFresh ? "运行中" : "未检测"}</strong><small>${service.last_seen_at ? esc(`最近心跳 ${formatTime(service.last_seen_at)}`) : `历史报告 ${reports.length} / 建议 ${suggestions.length}`}</small></div>
   `;
 }
 
@@ -135,7 +136,14 @@ function renderLatestReport(report) {
     root.innerHTML = `<div class="empty">还没有生成今日报告。</div>`;
     return;
   }
-  root.innerHTML = `${markdownLite(report.markdown)}<p><a href="${esc(report.url)}" target="_blank">打开可读 HTML 报告</a></p>`;
+  const overview = report.market_overview || {};
+  const counts = [
+    `${(overview.indices || []).length} 个指数`,
+    `${(overview.holdings || []).length} 个持仓行情`,
+    `${report.official_count || 0} 条官方资讯`,
+    `${report.social_count || 0} 条社媒`
+  ].join(" / ");
+  root.innerHTML = `<div class="report-meta">${esc(counts)}</div>${markdownLite(report.markdown)}<p><a href="${esc(report.url)}" target="_blank">打开可读 HTML 报告</a></p>`;
 }
 
 function renderSuggestions(items) {

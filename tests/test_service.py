@@ -5,7 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from marketanalyzeragents.analysis_system import _open_market_suggestion_interval
 from marketanalyzeragents.cli import build_parser, command_report, command_suggest
@@ -22,6 +22,7 @@ class ServiceCommandTests(unittest.TestCase):
                     "sources_path": "config/sources.json",
                     "state": {"analysis_dir": "state/analysis"},
                     "market_config_paths": {},
+                    "market_overview": {"enabled": False},
                 }
             ),
             encoding="utf-8",
@@ -51,6 +52,18 @@ class ServiceCommandTests(unittest.TestCase):
         self.assertEqual(args.command, "service")
         self.assertEqual(args.tick_seconds, 5)
         self.assertTrue(args.run_on_start)
+
+    def test_web_command_loads_dotenv_before_starting_server(self) -> None:
+        args = argparse.Namespace(host="0.0.0.0", port=8765)
+        root = Path("/tmp/project")
+        with patch("marketanalyzeragents.cli.find_project_root", return_value=root), patch(
+            "marketanalyzeragents.cli.load_dotenv"
+        ) as load_env, patch("marketanalyzeragents.cli.run_web_server") as run_web:
+            exit_code = build_parser().parse_args(["web"]).func(args)
+
+        self.assertEqual(exit_code, 0)
+        load_env.assert_called_once_with(root / ".env")
+        run_web.assert_has_calls([call(host="0.0.0.0", port=8765, root=root)])
 
     def test_report_command_generates_archive_with_dry_run_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

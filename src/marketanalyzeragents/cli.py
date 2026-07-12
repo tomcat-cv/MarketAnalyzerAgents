@@ -27,7 +27,9 @@ def command_suggest(args: argparse.Namespace) -> int:
 
 
 def command_web(args: argparse.Namespace) -> int:
-    run_web_server(host=args.host, port=args.port, root=find_project_root())
+    root = find_project_root()
+    load_dotenv(root / ".env")
+    run_web_server(host=args.host, port=args.port, root=root)
     return 0
 
 

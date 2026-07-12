@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from marketanalyzeragents.analysis_system import (
@@ -28,6 +29,7 @@ class WebCoreTests(unittest.TestCase):
                     "report_schedule": ["08:00", "14:00", "20:00"],
                     "state": {"analysis_dir": "state/analysis"},
                     "market_config_paths": {},
+                    "market_overview": {"enabled": False},
                     "official_sources": [],
                 }
             ),
@@ -181,6 +183,42 @@ class WebCoreTests(unittest.TestCase):
         self.assertIn("市场分析报告", report["markdown"])
         self.assertTrue(html_exists)
         self.assertEqual(state["latest_report"]["id"], report["id"])
+
+    def test_report_includes_market_overview_quotes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            settings = json.loads((root / "config" / "settings.json").read_text(encoding="utf-8"))
+            settings["market_overview"] = {
+                "enabled": True,
+                "indices": {"us_equities": [{"symbol": "^GSPC", "name": "标普 500"}]},
+            }
+            (root / "config" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+
+            def fake_fetch(_client, market, symbol, _settings):
+                return SimpleNamespace(
+                    quote=SimpleNamespace(
+                        market=market,
+                        symbol=symbol,
+                        observed_at="2026-07-09T08:00:00+00:00",
+                        price=5100.0 if symbol == "^GSPC" else 120.0,
+                        previous_close=5000.0 if symbol == "^GSPC" else 100.0,
+                    ),
+                    metrics={"period_change_pct": 3.25},
+                )
+
+            with patch("marketanalyzeragents.analysis_system._collect_official", return_value=([], [])), patch(
+                "marketanalyzeragents.analysis_system.current_market_sentiment",
+                return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
+            ), patch("marketanalyzeragents.analysis_system.fetch_market_data", side_effect=fake_fetch):
+                report = generate_market_report(root, slot="08:00", backend="dry-run")
+
+        index_symbols = [item["symbol"] for item in report["market_overview"]["indices"]]
+        self.assertIn("^GSPC", index_symbols)
+        self.assertEqual(report["market_overview"]["holdings"][0]["symbol"], "NVDA")
+        self.assertIn("## 市场整体情况", report["markdown"])
+        self.assertIn("标普 500", report["markdown"])
+        self.assertIn("NVIDIA", report["markdown"])
 
 
 if __name__ == "__main__":

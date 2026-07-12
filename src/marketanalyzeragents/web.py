@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +15,7 @@ from .analysis_system import (
     delete_topic,
     generate_intraday_suggestion,
     generate_market_report,
+    service_loop,
     update_model_configuration,
     update_source_configuration,
     upsert_holding,
@@ -119,6 +122,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def run_web_server(host: str = "127.0.0.1", port: int = 8765, root: Path | None = None) -> None:
     project_root = root or find_project_root()
+    if os.environ.get("MARKET_ANALYZER_AGENTS_WEB_SERVICE", "1").strip().lower() not in {"0", "false", "no"}:
+        threading.Thread(
+            target=service_loop,
+            kwargs={"root": project_root},
+            daemon=True,
+            name="market-analyzer-scheduler",
+        ).start()
     handler = type("BoundDashboardHandler", (DashboardHandler,), {"root": project_root})
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Market Analyzer web running at http://{host}:{port}", flush=True)

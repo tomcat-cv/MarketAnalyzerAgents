@@ -253,6 +253,13 @@
     .alert .meta { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
     .alert .title { font-weight: 800; margin-bottom: 6px; }
     .alert p { margin: 0; line-height: 1.45; }
+    .report-meta {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfdfc;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .brief-list { display: grid; gap: 1px; background: var(--line); }
     .brief-row {
       display: flex;
