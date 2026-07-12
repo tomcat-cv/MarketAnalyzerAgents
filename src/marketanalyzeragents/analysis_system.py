@@ -595,11 +595,163 @@ def social_summary(posts: list[SocialPost]) -> dict[str, Any]:
                     "url": post.url,
                     "text": post.text[:240],
                     "sentiment": sentiment,
+                    "collection_type": post.collection_type,
                 }
             )
     total = sum(counts.values())
     dominant = max(counts, key=lambda key: counts[key]) if total else "neutral"
     return {"counts": counts, "total": total, "dominant": dominant, "by_author": by_author}
+
+
+def _configured_social_accounts(sources: Mapping[str, Any]) -> dict[str, list[str]]:
+    social = sources.get("social_sources", {})
+    if not isinstance(social, Mapping):
+        return {}
+    result: dict[str, list[str]] = {}
+    for platform, config in social.items():
+        if isinstance(config, Mapping) and config.get("enabled", True):
+            accounts = [item.lstrip("@") for item in _string_list(config.get("accounts", [])) if item.lstrip("@")]
+            if accounts:
+                result[str(platform)] = accounts
+    return result
+
+
+def _post_dict(post: SocialPost, limit: int = 700) -> dict[str, str]:
+    return {
+        "platform": post.platform,
+        "author": post.author,
+        "published_at": post.published_at,
+        "url": post.url,
+        "text": post.text[:limit],
+        "sentiment": post.sentiment,
+        "collection_type": post.collection_type,
+    }
+
+
+def _split_social_posts(
+    posts: list[SocialPost],
+    configured_accounts: Mapping[str, list[str]],
+) -> tuple[list[SocialPost], dict[str, dict[str, list[SocialPost]]]]:
+    configured_keys = {
+        (platform, account.casefold())
+        for platform, accounts in configured_accounts.items()
+        for account in accounts
+    }
+    keyword_posts: list[SocialPost] = []
+    account_posts: dict[str, dict[str, list[SocialPost]]] = {}
+    for post in posts:
+        author_key = post.author.lstrip("@").casefold()
+        if post.collection_type == "account" or (post.platform, author_key) in configured_keys:
+            platform_posts = account_posts.setdefault(post.platform, {})
+            display_author = post.author or next(
+                (
+                    account
+                    for account in configured_accounts.get(post.platform, [])
+                    if account.casefold() == author_key
+                ),
+                "",
+            )
+            if display_author:
+                platform_posts.setdefault(display_author, []).append(post)
+            continue
+        keyword_posts.append(post)
+    return keyword_posts, account_posts
+
+
+def _fallback_blogger_summary(author: str, platform: str, posts: list[SocialPost]) -> str:
+    if not posts:
+        return "本次采集没有返回可分析的新帖。"
+    counts = social_summary(posts)["counts"]
+    latest_lines = [
+        f"- [{post.published_at or '时间未知'}]({post.url})：{post.text[:180]}"
+        for post in posts[:3]
+        if post.url
+    ]
+    return "\n".join(
+        [
+            f"{author}（{platform}）本次采集 {len(posts)} 条：积极 {counts['positive']}，消极 {counts['negative']}，中性 {counts['neutral']}。",
+            *(latest_lines or [f"- 最新内容：{posts[0].text[:180]}"]),
+        ]
+    )
+
+
+def _configured_blogger_inputs(
+    configured_accounts: Mapping[str, list[str]],
+    account_posts: Mapping[str, Mapping[str, list[SocialPost]]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for platform, accounts in configured_accounts.items():
+        posts_by_author = account_posts.get(platform, {})
+        for account in accounts:
+            posts: list[SocialPost] = []
+            display_author = account
+            for author, author_posts in posts_by_author.items():
+                if author.casefold() == account.casefold():
+                    display_author = author
+                    posts = author_posts[:20]
+                    break
+            result.append(
+                {
+                    "platform": platform,
+                    "account": account,
+                    "author": display_author,
+                    "post_count": len(posts),
+                    "posts": [_post_dict(post, 900) for post in posts],
+                    "sentiment_summary": social_summary(posts),
+                }
+            )
+    return result
+
+
+def _configured_blogger_markdown(summaries: list[Mapping[str, Any]]) -> str:
+    if not summaries:
+        return ""
+    lines = ["", "## 四、社媒观点与舆情", "", "### 配置博主观点"]
+    for item in summaries:
+        author = str(item.get("author", "")).strip()
+        platform = str(item.get("platform", "")).strip()
+        post_count = int(item.get("post_count") or 0)
+        summary = str(item.get("summary", "")).strip()
+        if not summary:
+            posts = item.get("posts", [])
+            if isinstance(posts, list):
+                summary = _fallback_blogger_summary(
+                    author,
+                    platform,
+                    [
+                        SocialPost(
+                            platform=platform,
+                            author=author,
+                            published_at=str(post.get("published_at", "")),
+                            url=str(post.get("url", "")),
+                            text=str(post.get("text", "")),
+                            sentiment=str(post.get("sentiment", "neutral")),
+                            collection_type="account",
+                        )
+                        for post in posts
+                        if isinstance(post, Mapping)
+                    ],
+                )
+        lines.extend(
+            [
+                "",
+                f"#### {author}（{platform}，{post_count} 条）",
+                summary or "本次采集没有返回可分析的新帖。",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _ensure_configured_blogger_section(markdown: str, summaries: list[Mapping[str, Any]]) -> str:
+    missing = [
+        item
+        for item in summaries
+        if str(item.get("author", "")).strip()
+        and str(item.get("author", "")).strip().casefold() not in markdown.casefold()
+    ]
+    if not missing:
+        return markdown
+    return markdown.rstrip() + "\n" + _configured_blogger_markdown(missing)
 
 
 def _call_model(settings: Mapping[str, Any], *, system: str, user: str, backend: str | None = None) -> str:
@@ -613,6 +765,29 @@ def _call_model(settings: Mapping[str, Any], *, system: str, user: str, backend:
         result, _ = run_zhipu(settings=settings, system=system, user=user)
         return result.text.strip()
     raise ValueError("backend must be zhipu, openai, or dry-run")
+
+
+def _call_report_section(
+    settings: Mapping[str, Any],
+    warnings: list[str],
+    *,
+    section_name: str,
+    system: str,
+    payload: Mapping[str, Any],
+    fallback: str,
+    backend: str | None = None,
+) -> str:
+    try:
+        markdown = _call_model(
+            settings,
+            system=system,
+            user=json.dumps(payload, ensure_ascii=False, indent=2),
+            backend=backend,
+        )
+    except Exception as exc:
+        warnings.append(f"model section {section_name}: {exc}")
+        return fallback
+    return markdown or fallback
 
 
 def _format_change(value: float | None) -> str:
@@ -637,6 +812,100 @@ def _quote_lines(rows: list[MarketQuoteRow], limit: int = 8) -> list[str]:
     ]
 
 
+def _official_lines(items: list[OfficialItem], limit: int = 8) -> list[str]:
+    return [
+        f"- [{item.title}]({item.url})：{item.summary[:180]}"
+        for item in items[:limit]
+        if item.url and item.title
+    ]
+
+
+def _market_sentiment_text(market_sentiment: Mapping[str, Any]) -> str:
+    if isinstance(market_sentiment, Mapping) and market_sentiment.get("value") not in (None, ""):
+        return f"{market_sentiment.get('value')} / {market_sentiment.get('label', '')}".strip()
+    return "市场情绪数据暂不可用；请检查行情、CBOE 或 FRED 数据源。"
+
+
+def _fallback_market_section(market_overview: Mapping[str, list[MarketQuoteRow]], market_sentiment: Mapping[str, Any]) -> str:
+    index_lines = _quote_lines(list(market_overview.get("indices", [])), 8)
+    return "\n".join(
+        [
+            "## 一、市场整体概况",
+            *(index_lines or ["- 指数行情暂不可用；请检查 market_data provider 或网络访问。"]),
+            f"- 市场情绪：{_market_sentiment_text(market_sentiment)}",
+        ]
+    )
+
+
+def _fallback_portfolio_section(market_overview: Mapping[str, list[MarketQuoteRow]], sources: Mapping[str, Any]) -> str:
+    holding_lines = _quote_lines(list(market_overview.get("holdings", [])), 8)
+    topic_lines = [
+        f"- {topic.get('name', topic.get('id', '关注主题'))}：{', '.join(_string_list(topic.get('keywords', []))[:6])}"
+        for topic in configured_topics(sources)
+        if topic.get("source") != "holding"
+    ]
+    return "\n".join(
+        [
+            "## 二、持仓与关注主题",
+            *(holding_lines or ["- 持仓行情暂不可用；当前报告仅使用配置的持仓和 Topic 作为新闻匹配上下文。"]),
+            *(topic_lines or []),
+        ]
+    )
+
+
+def _fallback_official_section(items: list[OfficialItem]) -> str:
+    return "\n".join(
+        [
+            "## 三、官方资讯",
+            *(_official_lines(items, 10) or ["- 当前窗口内没有新的官方链接进入报告。"]),
+        ]
+    )
+
+
+def _fallback_social_section(
+    keyword_posts: list[SocialPost],
+    configured_bloggers: list[Mapping[str, Any]],
+) -> str:
+    sentiment = social_summary(keyword_posts)
+    author_lines = []
+    for author, posts in list(sentiment["by_author"].items())[:6]:
+        latest = posts[0]
+        author_lines.append(f"- {author}（{latest['platform']}，{latest['sentiment']}）：{latest['text']}")
+    blogger_lines = []
+    for blogger in configured_bloggers:
+        author = str(blogger.get("author", blogger.get("account", ""))).strip()
+        platform = str(blogger.get("platform", "")).strip()
+        posts = blogger.get("posts", [])
+        if isinstance(posts, list):
+            converted_posts = [
+                SocialPost(
+                    platform=platform,
+                    author=author,
+                    published_at=str(post.get("published_at", "")),
+                    url=str(post.get("url", "")),
+                    text=str(post.get("text", "")),
+                    sentiment=str(post.get("sentiment", "neutral")),
+                    collection_type="account",
+                )
+                for post in posts
+                if isinstance(post, Mapping)
+            ]
+        else:
+            converted_posts = []
+        blogger_lines.extend(["", f"#### {author}（{platform}，{len(converted_posts)} 条）", _fallback_blogger_summary(author, platform, converted_posts)])
+    return "\n".join(
+        [
+            "## 四、社媒观点与舆情",
+            "### 关键词舆情概览",
+            f"- 帖子统计：积极 {sentiment['counts']['positive']}，消极 {sentiment['counts']['negative']}，中性 {sentiment['counts']['neutral']}；主导情绪 {sentiment['dominant']}。",
+            *(author_lines or ["- 本次关键词采集没有返回可分析的新帖。"]),
+            "",
+            "### 配置博主观点",
+            *(blogger_lines or ["- 本次没有配置博主帖子进入采集结果。"]),
+        ]
+    )
+
+
 def _report_fallback(
     pack: ContentPack,
     sources: Mapping[str, Any],
@@ -644,44 +913,21 @@ def _report_fallback(
     market_overview: Mapping[str, list[MarketQuoteRow]] | None = None,
 ) -> str:
     market_sentiment = sources.get("market_sentiment", {})
-    sentiment_text = ""
-    if isinstance(market_sentiment, Mapping) and market_sentiment.get("value") not in (None, ""):
-        sentiment_text = f"{market_sentiment.get('value')} / {market_sentiment.get('label', '')}".strip()
     overview = market_overview or {}
-    index_lines = _quote_lines(list(overview.get("indices", [])), 8)
-    holding_lines = _quote_lines(list(overview.get("holdings", [])), 8)
-    official_lines = [
-        f"- [{item.title}]({item.url})：{item.summary[:180]}"
-        for item in pack.official[:8]
-        if item.url and item.title
-    ]
-    sentiment = social_summary(pack.social_posts)
-    author_lines = []
-    for author, posts in list(sentiment["by_author"].items())[:6]:
-        latest = posts[0]
-        author_lines.append(f"- {author}（{latest['platform']}，{latest['sentiment']}）：{latest['text']}")
+    configured_accounts = _configured_social_accounts(sources)
+    keyword_posts, account_posts = _split_social_posts(pack.social_posts, configured_accounts)
+    configured_bloggers = _configured_blogger_inputs(configured_accounts, account_posts)
     return "\n".join(
         [
             f"# 市场分析报告 {run_at.strftime('%Y-%m-%d %H:%M')}",
             "",
-            "## 核心判断",
-            "官方资讯和社媒反馈已按来源分层整理；盘中使用同一批信息作为建议上下文。",
+            _fallback_market_section(overview, market_sentiment if isinstance(market_sentiment, Mapping) else {}),
             "",
-            "## 市场整体情况",
-            *(index_lines or ["- 指数行情暂不可用；请检查 market_data provider 或网络访问。"]),
+            _fallback_portfolio_section(overview, sources),
             "",
-            "## 官方资讯",
-            *(official_lines or ["- 当前窗口内没有新的官方链接进入报告。"]),
+            _fallback_official_section(pack.official),
             "",
-            "## 社媒情绪",
-            f"- 帖子统计：积极 {sentiment['counts']['positive']}，消极 {sentiment['counts']['negative']}，中性 {sentiment['counts']['neutral']}；主导情绪 {sentiment['dominant']}。",
-            *(author_lines or ["- 已保留博主分析区；配置账号后由社媒采集模块写入最新帖子。"]),
-            "",
-            "## 持仓和关注 Topic",
-            *(holding_lines or ["- 持仓行情暂不可用；当前报告仅使用配置的持仓和 Topic 作为新闻匹配上下文。"]),
-            "",
-            "## 市场情绪",
-            f"- {sentiment_text or '市场情绪数据暂不可用；请检查行情、CBOE 或 FRED 数据源。'}",
+            _fallback_social_section(keyword_posts, configured_bloggers),
         ]
     )
 
@@ -696,36 +942,94 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
     pack.source_warnings.extend(overview_warnings)
     market_sentiment, sentiment_warnings = current_market_sentiment(settings)
     pack.source_warnings.extend(sentiment_warnings)
-    payload = {
-        "holdings": configured_portfolio_holdings(sources),
-        "topics": configured_topics(sources),
-        "market_overview": {
-            "indices": [item.__dict__ for item in market_overview["indices"]],
-            "holdings": [item.__dict__ for item in market_overview["holdings"]],
-        },
-        "official": [item.__dict__ for item in pack.official],
-        "social": [item.__dict__ for item in pack.social_posts],
-        "social_summary": social_summary(pack.social_posts),
+    configured_accounts = _configured_social_accounts(sources)
+    keyword_posts, account_posts = _split_social_posts(pack.social_posts, configured_accounts)
+    configured_bloggers = _configured_blogger_inputs(configured_accounts, account_posts)
+    market_payload = {
+        "indices": [item.__dict__ for item in market_overview["indices"]],
         "market_sentiment": market_sentiment,
         "warnings": pack.source_warnings,
     }
-    system = (
-        "你是股票交易辅助系统的市场分析师。输出中文 Markdown，结构清晰，避免空泛套话。"
-        "官方资讯必须用可读标题链接，不输出裸长 URL。社媒部分要区分博主观点和总体情绪。"
-        "必须先写市场整体情况，覆盖主要指数方向、持仓行情和关注 Topic/公司新闻的影响。"
-        "不要写“证据不足无法给出建议”这类垃圾信息；没有材料时直接省略该分论点或说明待配置。"
+    portfolio_payload = {
+        "holdings": configured_portfolio_holdings(sources),
+        "topics": configured_topics(sources),
+        "holding_quotes": [item.__dict__ for item in market_overview["holdings"]],
+        "official": [item.__dict__ for item in pack.official[:8]],
+        "market_sentiment": market_sentiment,
+    }
+    official_payload = {"official": [item.__dict__ for item in pack.official[:12]]}
+    social_payload = {
+        "keyword_posts": [_post_dict(item) for item in keyword_posts[:20]],
+        "keyword_summary": social_summary(keyword_posts),
+        "configured_accounts": configured_accounts,
+        "configured_bloggers": configured_bloggers,
+    }
+    market_section = _call_report_section(
+        settings,
+        pack.source_warnings,
+        section_name="market_overview",
+        system=(
+            "你是市场概况分析师。只基于输入的指数行情和市场情绪写中文 Markdown。"
+            "必须以“## 一、市场整体概况”开头。"
+            "把市场情绪指标写在本章节中；不要写社媒、官方资讯或博主观点。"
+            "内容要分层清晰，优先说明 A 股和美股分化、风险偏好和需要注意的市场状态。"
+        ),
+        payload=market_payload,
+        fallback=_fallback_market_section(market_overview, market_sentiment),
+        backend=backend,
     )
-    user = json.dumps(payload, ensure_ascii=False, indent=2)
-    try:
-        markdown = _call_model(
-            settings,
-            system=system,
-            user=user,
-            backend=backend,
-        ) or _report_fallback(pack, {**dict(sources), "market_sentiment": market_sentiment}, run_at, market_overview)
-    except Exception as exc:
-        pack.source_warnings.append(f"model: {exc}")
-        markdown = _report_fallback(pack, {**dict(sources), "market_sentiment": market_sentiment}, run_at, market_overview)
+    portfolio_section = _call_report_section(
+        settings,
+        pack.source_warnings,
+        section_name="portfolio_topics",
+        system=(
+            "你是持仓与主题分析师。只基于输入的持仓、关注主题、持仓行情和官方资讯上下文写中文 Markdown。"
+            "必须以“## 二、持仓与关注主题”开头。"
+            "说明持仓和关注主题受到当前市场、资讯和主题变化的影响；不要写社媒关键词舆情或配置博主观点。"
+        ),
+        payload=portfolio_payload,
+        fallback=_fallback_portfolio_section(market_overview, sources),
+        backend=backend,
+    )
+    official_section = _call_report_section(
+        settings,
+        pack.source_warnings,
+        section_name="official_news",
+        system=(
+            "你是官方资讯编辑。只基于输入的官方资讯写中文 Markdown。"
+            "必须以“## 三、官方资讯”开头。"
+            "官方资讯必须使用可读标题链接，不输出裸 URL；没有官方资讯时直接说明当前未采集到新的官方链接。"
+        ),
+        payload=official_payload,
+        fallback=_fallback_official_section(pack.official),
+        backend=backend,
+    )
+    social_section = _call_report_section(
+        settings,
+        pack.source_warnings,
+        section_name="social",
+        system=(
+            "你是社媒观点分析师。只基于输入的社媒数据写中文 Markdown。"
+            "必须以“## 四、社媒观点与舆情”开头，并且必须包含两个二级小节："
+            "### 关键词舆情概览 和 ### 配置博主观点。"
+            "关键词舆情概览只总结 keyword_posts 与 keyword_summary。"
+            "配置博主观点必须按 configured_bloggers 中的每个配置账号逐个输出分析结果；即使某个账号没有返回帖子，也要说明本次未采集到可分析的新帖。"
+            "不要把关键词样本作者当成配置博主；不要引入输入以外的平台数据。"
+        ),
+        payload=social_payload,
+        fallback=_fallback_social_section(keyword_posts, configured_bloggers),
+        backend=backend,
+    )
+    markdown = "\n\n".join(
+        [
+            f"# 市场分析报告 {run_at.strftime('%Y-%m-%d %H:%M')}",
+            market_section.strip(),
+            portfolio_section.strip(),
+            official_section.strip(),
+            social_section.strip(),
+        ]
+    )
+    markdown = _ensure_configured_blogger_section(markdown, configured_bloggers)
     report_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{slot_value.replace(':', '')}"
     json_path = analysis_dir(root, settings, "reports") / f"{report_id}.json"
     html_path = analysis_dir(root, settings, "reports") / f"{report_id}.html"

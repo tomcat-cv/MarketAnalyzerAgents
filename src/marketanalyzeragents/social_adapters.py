@@ -22,6 +22,7 @@ class SocialPost:
     text: str
     keywords: list[str] = field(default_factory=list)
     sentiment: str = "neutral"
+    collection_type: str = "unknown"
 
 
 class SocialAdapter(Protocol):
@@ -70,6 +71,7 @@ class ManualSocialAdapter:
                     text=text,
                     keywords=keywords,
                     sentiment=str(raw_post.get("sentiment") or classify_sentiment(text)),
+                    collection_type="manual",
                 )
             )
         return posts, []
@@ -123,7 +125,7 @@ class XApiSocialAdapter:
             if warning:
                 warnings.append(warning)
                 continue
-            keyword_posts.extend(_parse_twitterapi_tweets(payload, config))
+            keyword_posts.extend(_parse_twitterapi_tweets(payload, config, collection_type="keyword"))
         for account in accounts:
             last_request_at = _wait_for_request_interval(last_request_at, request_interval)
             params = {
@@ -135,7 +137,7 @@ class XApiSocialAdapter:
             if warning:
                 warnings.append(warning)
                 continue
-            account_posts.extend(_parse_twitterapi_tweets(payload, config)[:account_max_results_per_account])
+            account_posts.extend(_parse_twitterapi_tweets(payload, config, collection_type="account")[:account_max_results_per_account])
         limited_keyword_posts = _dedupe_social_posts(keyword_posts)[:keyword_max_results]
         limited_account_posts = _dedupe_social_posts(account_posts)
         return _dedupe_social_posts(limited_keyword_posts + limited_account_posts), warnings
@@ -209,10 +211,18 @@ def _apply_twitterapi_query_filters(query: str, config: Mapping[str, Any]) -> st
     return query[:512]
 
 
-def _parse_twitterapi_tweets(payload: Mapping[str, Any], config: Mapping[str, Any]) -> list[SocialPost]:
+def _parse_twitterapi_tweets(
+    payload: Mapping[str, Any],
+    config: Mapping[str, Any],
+    *,
+    collection_type: str = "unknown",
+) -> list[SocialPost]:
     posts: list[SocialPost] = []
     keywords = string_list(config.get("keywords", []))
-    raw_tweets = payload.get("tweets", [])
+    raw_tweets = payload.get("tweets")
+    data = payload.get("data")
+    if not isinstance(raw_tweets, list) and isinstance(data, Mapping):
+        raw_tweets = data.get("tweets", [])
     if not isinstance(raw_tweets, list):
         return posts
     for item in raw_tweets:
@@ -240,6 +250,7 @@ def _parse_twitterapi_tweets(payload: Mapping[str, Any], config: Mapping[str, An
                 text=text,
                 keywords=keywords,
                 sentiment=classify_sentiment(text),
+                collection_type=collection_type,
             )
         )
     return posts

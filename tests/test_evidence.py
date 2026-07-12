@@ -108,15 +108,17 @@ class EvidenceContractTests(unittest.TestCase):
                         "status": "success"
                     }"""
                 return b"""{
-                    "tweets": [
-                        {
-                            "id": "456",
-                            "createdAt": "Sun Jul 12 09:00:00 +0000 2026",
-                            "url": "https://x.com/analyst/status/456",
-                            "text": "AI capex remains positive",
-                            "author": {"id": "u1", "userName": "analyst", "name": "Analyst"}
-                        }
-                    ],
+                    "data": {
+                        "tweets": [
+                            {
+                                "id": "456",
+                                "createdAt": "Sun Jul 12 09:00:00 +0000 2026",
+                                "url": "https://x.com/analyst/status/456",
+                                "text": "AI capex remains positive",
+                                "author": {"id": "u1", "userName": "analyst", "name": "Analyst"}
+                            }
+                        ]
+                    },
                     "has_next_page": false,
                     "next_cursor": "",
                     "status": "success"
@@ -144,6 +146,8 @@ class EvidenceContractTests(unittest.TestCase):
         self.assertEqual(posts[0].author, "analyst")
         self.assertEqual(posts[0].url, "https://x.com/analyst/status/123")
         self.assertEqual(posts[0].sentiment, "positive")
+        self.assertEqual(posts[0].collection_type, "keyword")
+        self.assertEqual(posts[1].collection_type, "account")
         self.assertIn("/twitter/tweet/advanced_search?", client.urls[0])
         self.assertIn("NVDA+OR+%22AI+capex%22", client.urls[0])
         self.assertIn("/twitter/user/last_tweets?", client.urls[1])
@@ -162,10 +166,12 @@ class EvidenceContractTests(unittest.TestCase):
                         "status": "success"
                     }"""
                 return b"""{
-                    "tweets": [
-                        {"id": "a1", "url": "https://x.com/analyst/status/a1", "text": "account one", "author": {"userName": "analyst"}},
-                        {"id": "a2", "url": "https://x.com/analyst/status/a2", "text": "account two", "author": {"userName": "analyst"}}
-                    ],
+                    "data": {
+                        "tweets": [
+                            {"id": "a1", "url": "https://x.com/analyst/status/a1", "text": "account one", "author": {"userName": "analyst"}},
+                            {"id": "a2", "url": "https://x.com/analyst/status/a2", "text": "account two", "author": {"userName": "analyst"}}
+                        ]
+                    },
                     "status": "success"
                 }"""
 

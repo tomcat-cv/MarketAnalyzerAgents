@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from marketanalyzeragents.analysis_system import (
+    ContentPack,
     dashboard_state,
     delete_holding,
     delete_topic,
@@ -16,6 +17,7 @@ from marketanalyzeragents.analysis_system import (
     upsert_holding,
     upsert_topic,
 )
+from marketanalyzeragents.social_adapters import SocialPost
 from marketanalyzeragents.web import ReportRunState
 
 
@@ -227,9 +229,90 @@ class WebCoreTests(unittest.TestCase):
         index_symbols = [item["symbol"] for item in report["market_overview"]["indices"]]
         self.assertIn("^GSPC", index_symbols)
         self.assertEqual(report["market_overview"]["holdings"][0]["symbol"], "NVDA")
-        self.assertIn("## 市场整体情况", report["markdown"])
+        self.assertIn("## 一、市场整体概况", report["markdown"])
         self.assertIn("标普 500", report["markdown"])
         self.assertIn("NVIDIA", report["markdown"])
+
+    def test_report_keeps_configured_blogger_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            pack = ContentPack(
+                official=[],
+                social_posts=[
+                    SocialPost(
+                        platform="x",
+                        author="search_author",
+                        published_at="2026-07-12T09:00:00+00:00",
+                        url="https://x.com/search_author/status/1",
+                        text="NVDA GPU demand remains positive",
+                        sentiment="positive",
+                        collection_type="keyword",
+                    ),
+                    SocialPost(
+                        platform="x",
+                        author="analyst",
+                        published_at="2026-07-12T10:00:00+00:00",
+                        url="https://x.com/analyst/status/2",
+                        text="GPU ROI is becoming the key AI infrastructure question",
+                        sentiment="neutral",
+                        collection_type="account",
+                    ),
+                ],
+                source_warnings=[],
+            )
+
+            with patch("marketanalyzeragents.analysis_system.collect_content", return_value=pack), patch(
+                "marketanalyzeragents.analysis_system.current_market_sentiment",
+                return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
+            ):
+                report = generate_market_report(root, slot="08:00", backend="dry-run")
+
+        self.assertIn("### 配置博主观点", report["markdown"])
+        self.assertIn("analyst", report["markdown"])
+        self.assertIn("GPU ROI", report["markdown"])
+        self.assertEqual(report["social_count"], 2)
+
+    def test_report_uses_one_social_model_call_for_all_configured_bloggers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            sources_path = root / "config" / "sources.json"
+            sources = json.loads(sources_path.read_text(encoding="utf-8"))
+            sources["social_sources"]["x"]["accounts"] = ["analyst", "second_analyst"]
+            sources_path.write_text(json.dumps(sources), encoding="utf-8")
+            pack = ContentPack(
+                official=[],
+                social_posts=[
+                    SocialPost(
+                        platform="x",
+                        author="analyst",
+                        published_at="2026-07-12T10:00:00+00:00",
+                        url="https://x.com/analyst/status/2",
+                        text="GPU ROI is becoming the key AI infrastructure question",
+                        sentiment="neutral",
+                        collection_type="account",
+                    ),
+                    SocialPost(
+                        platform="x",
+                        author="second_analyst",
+                        published_at="2026-07-12T10:05:00+00:00",
+                        url="https://x.com/second_analyst/status/3",
+                        text="Data center power remains a constraint",
+                        sentiment="neutral",
+                        collection_type="account",
+                    ),
+                ],
+                source_warnings=[],
+            )
+
+            with patch("marketanalyzeragents.analysis_system.collect_content", return_value=pack), patch(
+                "marketanalyzeragents.analysis_system.current_market_sentiment",
+                return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
+            ), patch("marketanalyzeragents.analysis_system._call_model", return_value="") as call_model:
+                generate_market_report(root, slot="08:00", backend="zhipu")
+
+        self.assertEqual(call_model.call_count, 4)
 
     def test_report_run_state_completes_background_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

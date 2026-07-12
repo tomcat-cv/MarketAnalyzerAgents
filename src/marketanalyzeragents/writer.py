@@ -25,6 +25,7 @@ def markdown_to_html(markdown: str, title: str = "Market Analyzer Brief") -> str
     lines = markdown.splitlines()
     body: list[str] = []
     in_list = False
+    in_section = False
     for raw_line in lines:
         line = raw_line.rstrip()
         if not line:
@@ -38,7 +39,19 @@ def markdown_to_html(markdown: str, title: str = "Market Analyzer Brief") -> str
                 in_list = False
             level = min(len(line) - len(line.lstrip("#")), 6)
             text = _inline_markdown_to_html(line[level:].strip())
-            body.append(f"<h{level}>{text}</h{level}>")
+            if level == 1:
+                if in_section:
+                    body.append("</section>")
+                    in_section = False
+                body.append(f"<h1>{text}</h1>")
+            elif level == 2:
+                if in_section:
+                    body.append("</section>")
+                body.append('<section class="report-section">')
+                body.append(f"<h2>{text}</h2>")
+                in_section = True
+            else:
+                body.append(f"<h{level}>{text}</h{level}>")
             continue
         if line.startswith("- "):
             if not in_list:
@@ -52,6 +65,8 @@ def markdown_to_html(markdown: str, title: str = "Market Analyzer Brief") -> str
         body.append(f"<p>{_inline_markdown_to_html(line)}</p>")
     if in_list:
         body.append("</ul>")
+    if in_section:
+        body.append("</section>")
 
     return """<!doctype html>
 <html lang="zh-CN">
@@ -60,10 +75,20 @@ def markdown_to_html(markdown: str, title: str = "Market Analyzer Brief") -> str
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.65; max-width: 980px; margin: 32px auto; padding: 0 20px; color: #17202a; }}
-    h1, h2, h3, h4 {{ line-height: 1.3; }}
-    h1 {{ border-bottom: 1px solid #d8dee4; padding-bottom: 12px; }}
+    :root {{ color-scheme: light; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.65; max-width: 1080px; margin: 28px auto; padding: 0 20px 48px; color: #17202a; background: #f6f8fa; }}
+    h1, h2, h3, h4 {{ line-height: 1.3; letter-spacing: 0; }}
+    h1 {{ margin: 0 0 18px; padding-bottom: 14px; border-bottom: 1px solid #d8dee4; font-size: 28px; }}
+    h2 {{ margin: 0 0 14px; font-size: 21px; }}
+    h3 {{ margin: 20px 0 8px; font-size: 17px; color: #344054; }}
+    h4 {{ margin: 16px 0 6px; font-size: 15px; color: #344054; }}
+    p {{ margin: 8px 0; }}
+    ul {{ margin: 8px 0 0; padding-left: 22px; }}
     li {{ margin: 6px 0; }}
+    a {{ color: #0969da; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .report-section {{ background: #fff; border: 1px solid #d8dee4; border-radius: 8px; padding: 18px 20px; margin: 14px 0; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }}
+    .report-section > h2 {{ border-bottom: 1px solid #eef2f6; padding-bottom: 10px; }}
   </style>
 </head>
 <body>
