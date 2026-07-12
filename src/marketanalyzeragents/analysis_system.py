@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ from .zhipu_runner import run_zhipu
 
 MARKETS = ("a_share", "us_equities")
 REPORT_SCHEDULES = ("08:00", "14:00", "20:00")
+SERVICE_ERROR_LIMIT = 8
 
 
 @dataclass
@@ -203,6 +205,24 @@ def _normalize_social_sources(payload_value: Any, existing_value: Any, sources: 
             "accounts": _string_list(incoming.get("accounts", existing.get("accounts", []))),
             "keywords": keywords,
         }
+        for key in (
+            "api_base",
+            "api_key_env",
+            "query_type",
+            "include_replies",
+            "exclude_replies",
+            "exclude_retweets",
+            "language",
+            "account_max_results_per_account",
+            "keyword_max_results",
+            "max_results",
+            "query",
+            "request_interval_seconds",
+        ):
+            if key in incoming:
+                result[platform][key] = incoming[key]
+            elif key in existing:
+                result[platform][key] = existing[key]
     return result
 
 
@@ -553,7 +573,7 @@ def collect_content(root: Path, settings: Mapping[str, Any], sources: Mapping[st
         sources,
     )
     collection_sources = {**dict(sources), "social_sources": social_sources}
-    social_posts, social_warnings = collect_social_posts(collection_sources)
+    social_posts, social_warnings = collect_social_posts(collection_sources, _collector_client(settings))
     return ContentPack(
         official=official,
         social_posts=social_posts,
@@ -754,7 +774,7 @@ def generate_intraday_suggestion(root: Path, *, backend: str | None = None) -> d
         symbol = str(holding.get("symbol") or holding.get("ticker") or "").strip()
         try:
             data = fetch_market_data(client, market, symbol, settings.get("market_data", {}))
-        except MarketDataProviderError as exc:
+        except (MarketDataProviderError, ValueError) as exc:
             quote_errors.append(f"{market} {symbol}: {exc}")
             continue
         quote_rows.append(
@@ -911,8 +931,39 @@ def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = Fal
     last_report_key = ""
     last_suggestion_key = ""
     last_report_result: dict[str, Any] | None = None
+    recent_errors: list[dict[str, str]] = []
+
+    def record_error(settings: Mapping[str, Any], now: datetime, task: str, exc: Exception) -> None:
+        nonlocal recent_errors
+        error = {
+            "task": task,
+            "at": now.isoformat(timespec="seconds"),
+            "type": type(exc).__name__,
+            "message": str(exc),
+        }
+        recent_errors = ([error] + recent_errors)[:SERVICE_ERROR_LIMIT]
+        print(f"market-analyzer service {task} failed at {error['at']}: {error['type']}: {error['message']}", file=sys.stderr, flush=True)
+        write_json_atomic(
+            service_status_path(root, settings),
+            {
+                "pid": os.getpid(),
+                "last_seen_at": now.isoformat(timespec="seconds"),
+                "report_schedule": settings.get("report_schedule", REPORT_SCHEDULES),
+                "last_report_key": last_report_key,
+                "last_report_id": last_report_result.get("id") if last_report_result else "",
+                "last_error": error,
+                "recent_errors": recent_errors,
+                "tick_seconds": tick_seconds,
+            },
+        )
+
     if run_on_start:
-        last_report_result = generate_market_report(root)
+        settings = load_settings(root)
+        now = beijing_now(settings)
+        try:
+            last_report_result = generate_market_report(root)
+        except Exception as exc:
+            record_error(settings, now, "run_on_start_report", exc)
     while True:
         settings = load_settings(root)
         now = beijing_now(settings)
@@ -927,32 +978,42 @@ def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = Fal
                 "report_schedule": schedule,
                 "last_report_key": last_report_key,
                 "last_report_id": last_report_result.get("id") if last_report_result else "",
+                "last_error": recent_errors[0] if recent_errors else None,
+                "recent_errors": recent_errors,
                 "tick_seconds": tick_seconds,
             },
         )
         current_minute = now.strftime("%H:%M")
         current_day_key = now.strftime("%Y-%m-%d")
         if current_minute in schedule and last_report_key != f"{current_day_key} {current_minute}":
-            last_report_result = generate_market_report(root, slot=current_minute)
-            last_report_key = f"{current_day_key} {current_minute}"
-            settings = load_settings(root)
-            write_json_atomic(
-                service_status_path(root, settings),
-                {
-                    "pid": os.getpid(),
-                    "last_seen_at": beijing_now(settings).isoformat(timespec="seconds"),
-                    "report_schedule": schedule,
-                    "last_report_key": last_report_key,
-                    "last_report_id": last_report_result.get("id"),
-                    "tick_seconds": tick_seconds,
-                },
-            )
-        market_states = dashboard_state(root)["markets"]
-        suggestion_interval = _open_market_suggestion_interval(settings, market_states)
-        suggestion_key = now.strftime("%Y-%m-%d %H:%M")
-        if suggestion_interval is not None and suggestion_key != last_suggestion_key:
-            seconds_since_hour = now.minute * 60 + now.second
-            if seconds_since_hour % suggestion_interval < tick_seconds:
-                generate_intraday_suggestion(root)
-                last_suggestion_key = suggestion_key
+            try:
+                last_report_result = generate_market_report(root, slot=current_minute)
+                last_report_key = f"{current_day_key} {current_minute}"
+                settings = load_settings(root)
+                write_json_atomic(
+                    service_status_path(root, settings),
+                    {
+                        "pid": os.getpid(),
+                        "last_seen_at": beijing_now(settings).isoformat(timespec="seconds"),
+                        "report_schedule": schedule,
+                        "last_report_key": last_report_key,
+                        "last_report_id": last_report_result.get("id"),
+                        "last_error": recent_errors[0] if recent_errors else None,
+                        "recent_errors": recent_errors,
+                        "tick_seconds": tick_seconds,
+                    },
+                )
+            except Exception as exc:
+                record_error(settings, now, "scheduled_report", exc)
+        try:
+            market_states = dashboard_state(root)["markets"]
+            suggestion_interval = _open_market_suggestion_interval(settings, market_states)
+            suggestion_key = now.strftime("%Y-%m-%d %H:%M")
+            if suggestion_interval is not None and suggestion_key != last_suggestion_key:
+                seconds_since_hour = now.minute * 60 + now.second
+                if seconds_since_hour % suggestion_interval < tick_seconds:
+                    generate_intraday_suggestion(root)
+                    last_suggestion_key = suggestion_key
+        except Exception as exc:
+            record_error(settings, now, "intraday_suggestion", exc)
         time.sleep(max(1, tick_seconds))

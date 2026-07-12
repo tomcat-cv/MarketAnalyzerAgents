@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from marketanalyzeragents.analysis_system import (
     upsert_holding,
     upsert_topic,
 )
+from marketanalyzeragents.web import ReportRunState
 
 
 class WebCoreTests(unittest.TestCase):
@@ -121,7 +123,14 @@ class WebCoreTests(unittest.TestCase):
                 root,
                 {
                     "official_sources": [{"type": "rss", "enabled": True, "name": "Fed", "url": "https://example.com/rss"}],
-                    "social_sources": {"x": {"enabled": True, "accounts": ["macro_analyst"]}},
+                    "social_sources": {
+                        "x": {
+                            "enabled": True,
+                            "accounts": ["macro_analyst"],
+                            "keyword_max_results": 12,
+                            "account_max_results_per_account": 8,
+                        }
+                    },
                 },
             )
 
@@ -130,6 +139,8 @@ class WebCoreTests(unittest.TestCase):
         self.assertEqual(sources["focus_topics"], [{"id": "energy", "name": "能源", "keywords": ["power", "utility"]}])
         self.assertEqual(sources["official_sources"][0]["name"], "Fed")
         self.assertEqual(sources["social_sources"]["x"]["accounts"], ["macro_analyst"])
+        self.assertEqual(sources["social_sources"]["x"]["keyword_max_results"], 12)
+        self.assertEqual(sources["social_sources"]["x"]["account_max_results_per_account"], 8)
         self.assertNotIn("manual_posts", sources["social_sources"]["x"])
         self.assertIn("NVDA", sources["social_sources"]["x"]["keywords"])
         self.assertIn("power", sources["social_sources"]["x"]["keywords"])
@@ -219,6 +230,33 @@ class WebCoreTests(unittest.TestCase):
         self.assertIn("## 市场整体情况", report["markdown"])
         self.assertIn("标普 500", report["markdown"])
         self.assertIn("NVIDIA", report["markdown"])
+
+    def test_report_run_state_completes_background_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            runner = ReportRunState()
+
+            with patch(
+                "marketanalyzeragents.web.generate_market_report",
+                return_value={
+                    "id": "20260710-080000-0800",
+                    "title": "2026-07-10 08:00 市场分析报告",
+                    "generated_at": "2026-07-10T08:00:00+08:00",
+                    "official_count": 2,
+                    "social_count": 1,
+                },
+            ):
+                started = runner.start(root, backend="dry-run")
+                for _ in range(50):
+                    status = runner.snapshot()
+                    if status["state"] == "completed":
+                        break
+                    time.sleep(0.01)
+
+        self.assertEqual(started["state"], "running")
+        self.assertEqual(status["state"], "completed")
+        self.assertEqual(status["result"]["id"], "20260710-080000-0800")
 
 
 if __name__ == "__main__":

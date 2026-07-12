@@ -4,12 +4,14 @@ import json
 import mimetypes
 import os
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 from .analysis_system import (
+    beijing_now,
     dashboard_state,
     delete_holding,
     delete_topic,
@@ -26,6 +28,81 @@ from .config import find_project_root, load_settings, resolve_path
 
 STATIC_DIR = Path(__file__).with_name("static")
 INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+
+class ReportRunState:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._status: dict[str, Any] = {"state": "idle"}
+        self._started_monotonic: float | None = None
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            status = dict(self._status)
+            if status.get("state") == "running" and self._started_monotonic is not None:
+                status["elapsed_seconds"] = max(0, int(time.monotonic() - self._started_monotonic))
+            return status
+
+    def start(self, root: Path, backend: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            if self._status.get("state") == "running":
+                return self.snapshot()
+            settings = load_settings(root)
+            started_at = beijing_now(settings).isoformat(timespec="seconds")
+            self._status = {
+                "state": "running",
+                "started_at": started_at,
+                "message": "正在收集资讯、行情和市场情绪",
+                "elapsed_seconds": 0,
+            }
+            self._started_monotonic = time.monotonic()
+        threading.Thread(
+            target=self._run,
+            kwargs={"root": root, "backend": backend},
+            daemon=True,
+            name="market-analyzer-manual-report",
+        ).start()
+        return self.snapshot()
+
+    def _run(self, root: Path, backend: str | None) -> None:
+        try:
+            report = generate_market_report(root, backend=backend)
+        except Exception as exc:
+            settings = load_settings(root)
+            with self._lock:
+                self._status = {
+                    "state": "failed",
+                    "started_at": self._status.get("started_at"),
+                    "completed_at": beijing_now(settings).isoformat(timespec="seconds"),
+                    "elapsed_seconds": self._elapsed_seconds(),
+                    "error": str(exc),
+                }
+                self._started_monotonic = None
+            return
+        settings = load_settings(root)
+        with self._lock:
+            self._status = {
+                "state": "completed",
+                "started_at": self._status.get("started_at"),
+                "completed_at": beijing_now(settings).isoformat(timespec="seconds"),
+                "elapsed_seconds": self._elapsed_seconds(),
+                "result": {
+                    "id": report.get("id"),
+                    "title": report.get("title"),
+                    "generated_at": report.get("generated_at"),
+                    "official_count": report.get("official_count"),
+                    "social_count": report.get("social_count"),
+                },
+            }
+            self._started_monotonic = None
+
+    def _elapsed_seconds(self) -> int:
+        if self._started_monotonic is None:
+            return 0
+        return max(0, int(time.monotonic() - self._started_monotonic))
+
+
+REPORT_RUN_STATE = ReportRunState()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -79,6 +156,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if self.path == "/api/state":
             self._send_json(dashboard_state(self.root))
             return
+        if self.path == "/api/report/status":
+            self._send_json(REPORT_RUN_STATE.snapshot())
+            return
         if self.path.startswith("/static/"):
             self._send_file(STATIC_DIR / self.path.removeprefix("/static/"))
             return
@@ -111,7 +191,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif self.path == "/api/topics/delete":
                 self._send_json(delete_topic(self.root, payload))
             elif self.path == "/api/report/run":
-                self._send_json(generate_market_report(self.root, backend=payload.get("backend")))
+                self._send_json(REPORT_RUN_STATE.start(self.root, backend=payload.get("backend")), HTTPStatus.ACCEPTED)
             elif self.path == "/api/suggestion/run":
                 self._send_json(generate_intraday_suggestion(self.root, backend=payload.get("backend")))
             else:

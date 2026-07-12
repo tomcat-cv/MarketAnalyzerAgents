@@ -1,4 +1,4 @@
-const state = { data: null, configDirty: false };
+const state = { data: null, configDirty: false, reportPollTimer: null, reportElapsedTimer: null, reportStatus: null };
 
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
   "&": "&amp;",
@@ -30,6 +30,13 @@ async function postJson(url, payload) {
 
 function formatTime(value) {
   return value ? String(value).replace("T", " ").slice(0, 16) : "";
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return minutes ? `${minutes}分${String(rest).padStart(2, "0")}秒` : `${rest}秒`;
 }
 
 function markdownLite(markdown) {
@@ -132,18 +139,97 @@ function renderMarketSentiment(sentiment) {
 
 function renderLatestReport(report) {
   const root = document.getElementById("latest-report");
+  const time = document.getElementById("latest-report-time");
   if (!report) {
+    time.textContent = "暂无生成记录";
     root.innerHTML = `<div class="empty">还没有生成今日报告。</div>`;
     return;
   }
   const overview = report.market_overview || {};
+  time.textContent = `生成时间 ${formatTime(report.generated_at)} 北京时间`;
   const counts = [
     `${(overview.indices || []).length} 个指数`,
     `${(overview.holdings || []).length} 个持仓行情`,
     `${report.official_count || 0} 条官方资讯`,
     `${report.social_count || 0} 条社媒`
   ].join(" / ");
-  root.innerHTML = `<div class="report-meta">${esc(counts)}</div>${markdownLite(report.markdown)}<p><a href="${esc(report.url)}" target="_blank">打开可读 HTML 报告</a></p>`;
+  root.innerHTML = `
+    <div class="report-meta">
+      <span>${esc(report.title || "最新市场分析报告")}</span>
+      <span>${esc(counts)}</span>
+    </div>
+    ${markdownLite(report.markdown)}
+    <p><a href="${esc(report.url)}" target="_blank">打开可读 HTML 报告</a></p>
+  `;
+}
+
+function renderReportRunStatus(status) {
+  const panel = document.getElementById("report-run-status");
+  const button = document.getElementById("run-report");
+  state.reportStatus = status || {state: "idle"};
+  const runState = state.reportStatus.state || "idle";
+  button.disabled = runState === "running";
+  button.textContent = runState === "running" ? "生成中" : "立即生成";
+  if (runState === "idle") {
+    panel.hidden = true;
+    panel.className = "run-status";
+    panel.innerHTML = "";
+    return;
+  }
+  const elapsed = state.reportStatus.elapsed_seconds || 0;
+  const startedAt = state.reportStatus.started_at ? `开始 ${formatTime(state.reportStatus.started_at)} 北京时间` : "";
+  const label = runState === "running" ? "报告生成中" : runState === "completed" ? "报告已生成" : "报告生成失败";
+  const detail = runState === "failed"
+    ? (state.reportStatus.error || "生成过程出现错误")
+    : runState === "completed"
+      ? `${state.reportStatus.result?.title || "最新报告"} 已自动刷新`
+      : (state.reportStatus.message || "正在生成报告");
+  panel.hidden = false;
+  panel.className = `run-status ${esc(runState)}`;
+  panel.innerHTML = `
+    <div class="run-status-top">
+      <strong>${esc(label)}</strong>
+      <span class="subtle">${esc(startedAt)}${startedAt ? " / " : ""}已等待 ${esc(formatDuration(elapsed))}</span>
+    </div>
+    <div class="subtle">${esc(detail)}</div>
+    <div class="run-status-bar" aria-hidden="true"><span></span></div>
+  `;
+}
+
+function stopReportTimers() {
+  if (state.reportPollTimer) {
+    clearInterval(state.reportPollTimer);
+    state.reportPollTimer = null;
+  }
+  if (state.reportElapsedTimer) {
+    clearInterval(state.reportElapsedTimer);
+    state.reportElapsedTimer = null;
+  }
+}
+
+async function pollReportStatus({notify = true, refreshOnCompleted = true} = {}) {
+  const response = await fetch("/api/report/status");
+  const status = await response.json();
+  renderReportRunStatus(status);
+  if (status.state === "running") return;
+  stopReportTimers();
+  if (status.state === "completed") {
+    if (notify) toast("报告已生成");
+    if (refreshOnCompleted) await refresh();
+  } else if (status.state === "failed") {
+    if (notify) toast(status.error || "报告生成失败");
+  }
+}
+
+function startReportPolling() {
+  stopReportTimers();
+  state.reportPollTimer = setInterval(() => {
+    pollReportStatus().catch(error => toast(error.message));
+  }, 2500);
+  state.reportElapsedTimer = setInterval(() => {
+    if (!state.reportStatus || state.reportStatus.state !== "running") return;
+    renderReportRunStatus({...state.reportStatus, elapsed_seconds: (state.reportStatus.elapsed_seconds || 0) + 1});
+  }, 1000);
 }
 
 function renderSuggestions(items) {
@@ -255,6 +341,12 @@ function lines(value) {
   return String(value || "").split(/\n|,|，/).map(item => item.trim()).filter(Boolean);
 }
 
+function positiveInteger(value, fallback) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(100, parsed);
+}
+
 function renderConfig(data) {
   if (state.configDirty) return;
   const model = document.getElementById("model-form");
@@ -276,6 +368,8 @@ function renderConfig(data) {
   source.official_sources.value = (data.official_sources || []).map(item => `${item.name || ""} | ${item.url || ""} | ${(item.topics || []).join(", ")}`).join("\n");
   const social = data.social_sources || {};
   source.x_accounts.value = ((social.x || {}).accounts || []).join("\n");
+  source.x_keyword_max_results.value = (social.x || {}).keyword_max_results || (social.x || {}).max_results || 20;
+  source.x_account_max_results_per_account.value = (social.x || {}).account_max_results_per_account || (social.x || {}).max_results || 20;
   source.xiaohongshu_accounts.value = ((social.xiaohongshu || {}).accounts || []).join("\n");
   source.social_keywords.value = (data.social_keywords || []).join("\n");
 }
@@ -302,6 +396,10 @@ async function refresh() {
 
 document.querySelectorAll(".tab-button").forEach(button => {
   button.addEventListener("click", () => openTab(button.dataset.tab));
+});
+
+document.querySelectorAll("[data-open-tab]").forEach(button => {
+  button.addEventListener("click", () => openTab(button.dataset.openTab));
 });
 
 document.querySelectorAll("form").forEach(form => {
@@ -358,7 +456,12 @@ document.getElementById("source-form").addEventListener("submit", async event =>
   await postJson("/api/sources", {
     official_sources: official,
     social_sources: {
-      x: {enabled: true, accounts: lines(form.get("x_accounts"))},
+      x: {
+        enabled: true,
+        accounts: lines(form.get("x_accounts")),
+        keyword_max_results: positiveInteger(form.get("x_keyword_max_results"), 20),
+        account_max_results_per_account: positiveInteger(form.get("x_account_max_results_per_account"), 20)
+      },
       xiaohongshu: {enabled: true, accounts: lines(form.get("xiaohongshu_accounts"))}
     }
   });
@@ -368,9 +471,14 @@ document.getElementById("source-form").addEventListener("submit", async event =>
 });
 
 document.getElementById("run-report").addEventListener("click", async () => {
-  toast("正在生成报告");
-  await postJson("/api/report/run", {});
-  await refresh();
+  try {
+    renderReportRunStatus(await postJson("/api/report/run", {}));
+    startReportPolling();
+    toast("已开始生成报告");
+  } catch (error) {
+    renderReportRunStatus({state: "failed", error: error.message});
+    toast(error.message);
+  }
 });
 
 document.getElementById("run-suggestion").addEventListener("click", async () => {
@@ -379,4 +487,9 @@ document.getElementById("run-suggestion").addEventListener("click", async () => 
   await refresh();
 });
 
-refresh().catch(error => toast(error.message));
+refresh()
+  .then(() => pollReportStatus({notify: false, refreshOnCompleted: false}))
+  .then(() => {
+    if (state.reportStatus?.state === "running") startReportPolling();
+  })
+  .catch(error => toast(error.message));

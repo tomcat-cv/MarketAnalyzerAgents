@@ -40,7 +40,7 @@ marketanalyzeragents service
 - `config/calendars/a_share_2026.json`：A 股 2026 休市文件日历。
 - `config/calendars/us_equities_2026.json`：美股 2026 休市和提前收盘文件日历。
 
-网页配置只需要维护 X/小红书关注博主列表。社媒关键词由持仓代码、公司名称、持仓主题和关注 Topic 自动生成。平台数据采集是内部扩展点；未配置可用采集方式时只产生 warning，不伪造不可获得的数据。
+网页配置只需要维护 X/小红书关注博主列表。社媒关键词由持仓代码、公司名称、持仓主题和关注 Topic 自动生成。X 支持通过 twitterapi.io 采集真实帖子：在 `.env` 中设置 `TWITTERAPI_IO_API_KEY`，并在 `config/sources.json` 中使用 `"adapter": "x_api"`。未配置可用采集方式或缺少 API key 时只产生 warning，不伪造不可获得的数据。
 
 ## 运行数据
 

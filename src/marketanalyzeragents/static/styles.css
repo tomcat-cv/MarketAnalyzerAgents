@@ -202,6 +202,10 @@
       text-decoration: none;
     }
     button.secondary, .button-link.secondary { background: transparent; color: var(--black); }
+    button:disabled {
+      cursor: wait;
+      opacity: .68;
+    }
     button.danger { border-color: var(--red); background: transparent; color: var(--red); padding: 5px 8px; }
     button.ghost { border-color: var(--line); background: transparent; color: var(--teal); padding: 5px 8px; }
     .inline-actions { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -254,11 +258,50 @@
     .alert .title { font-weight: 800; margin-bottom: 6px; }
     .alert p { margin: 0; line-height: 1.45; }
     .report-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
       padding: 10px 14px;
       border-bottom: 1px solid var(--line);
       background: #fbfdfc;
       color: var(--muted);
       font-size: 12px;
+    }
+    .report-meta span:first-child { color: var(--ink); font-weight: 800; }
+    .run-status {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #f8faf9;
+    }
+    .run-status-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      margin-bottom: 9px;
+      font-size: 13px;
+    }
+    .run-status strong { color: var(--black); }
+    .run-status-bar {
+      height: 7px;
+      overflow: hidden;
+      border: 1px solid #bdd0cc;
+      background: #eef3ef;
+    }
+    .run-status-bar span {
+      display: block;
+      width: 42%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--green), var(--blue), var(--teal));
+      animation: report-progress 1.2s ease-in-out infinite;
+    }
+    .run-status.failed .run-status-bar span { width: 100%; background: var(--red); animation: none; }
+    .run-status.completed .run-status-bar span { width: 100%; background: var(--green); animation: none; }
+    @keyframes report-progress {
+      0% { transform: translateX(-110%); }
+      100% { transform: translateX(250%); }
     }
     .brief-list { display: grid; gap: 1px; background: var(--line); }
     .brief-row {

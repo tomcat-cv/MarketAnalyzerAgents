@@ -1,4 +1,39 @@
 {
+  "focus_topics": [
+    {
+      "id": "ai-infrastructure",
+      "keywords": [
+        "AI capex",
+        "GPU",
+        "data center"
+      ],
+      "name": "AI 基础设施"
+    }
+  ],
+  "official_sources": [
+    {
+      "allowed_domains": [],
+      "enabled": true,
+      "name": "NVIDIA Press Releases",
+      "topics": [
+        "NVDA",
+        "AI infrastructure"
+      ],
+      "type": "rss",
+      "url": "https://nvidianews.nvidia.com/cats/press_release.xml"
+    },
+    {
+      "allowed_domains": [],
+      "enabled": true,
+      "name": "Federal Reserve Press Releases",
+      "topics": [
+        "Federal Reserve",
+        "monetary policy"
+      ],
+      "type": "rss",
+      "url": "https://www.federalreserve.gov/feeds/press_all.xml"
+    }
+  ],
   "portfolios": {
     "a_share": {
       "holdings": []
@@ -6,82 +41,43 @@
     "us_equities": {
       "holdings": [
         {
-          "ticker": "NVDA",
-          "symbol": "NVDA",
           "company": "NVIDIA",
+          "symbol": "NVDA",
           "themes": [
             "AI 算力",
             "数据中心"
-          ]
+          ],
+          "ticker": "NVDA"
         }
       ]
     }
   },
-  "focus_topics": [
-    {
-      "id": "ai-infrastructure",
-      "name": "AI 基础设施",
+  "social_sources": {
+    "x": {
+      "accounts": [
+        "serenity"
+      ],
+      "adapter": "x_api",
+      "api_key_env": "TWITTERAPI_IO_API_KEY",
+      "keyword_max_results": 20,
+      "account_max_results_per_account": 20,
+      "request_interval_seconds": 5,
+      "enabled": true,
       "keywords": [
+        "NVDA",
+        "NVIDIA",
+        "AI 算力",
+        "数据中心",
+        "AI 基础设施",
         "AI capex",
         "GPU",
         "data center"
       ]
-    }
-  ],
-  "official_sources": [
-    {
-      "type": "rss",
-      "enabled": true,
-      "name": "NVIDIA Press Releases",
-      "url": "https://nvidianews.nvidia.com/cats/press_release.xml",
-      "topics": [
-        "NVDA",
-        "AI infrastructure"
-      ],
-      "tickers": [
-        "NVDA"
-      ],
-      "allowed_domains": [
-        "nvidianews.nvidia.com"
-      ],
-      "limit": 10,
-      "source_type": "primary"
-    },
-    {
-      "type": "rss",
-      "enabled": true,
-      "name": "Federal Reserve Press Releases",
-      "url": "https://www.federalreserve.gov/feeds/press_all.xml",
-      "topics": [
-        "Federal Reserve",
-        "monetary policy"
-      ],
-      "allowed_domains": [
-        "federalreserve.gov"
-      ],
-      "limit": 10,
-      "source_type": "primary"
-    }
-  ],
-  "social_sources": {
-    "x": {
-      "enabled": true,
-      "adapter": "disabled",
-      "keywords": [
-        "NVDA",
-        "NVIDIA",
-        "AI 算力",
-        "数据中心",
-        "AI 基础设施",
-        "AI capex",
-        "GPU",
-        "data center"
-      ],
-      "accounts": []
     },
     "xiaohongshu": {
-      "enabled": true,
+      "accounts": [],
       "adapter": "disabled",
+      "enabled": true,
       "keywords": [
         "NVDA",
         "NVIDIA",
@@ -91,8 +87,7 @@
         "AI capex",
         "GPU",
         "data center"
-      ],
-      "accounts": []
+      ]
     }
   }
 }

@@ -4,10 +4,12 @@ import io
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import call, patch
+from zoneinfo import ZoneInfo
 
-from marketanalyzeragents.analysis_system import _open_market_suggestion_interval
+from marketanalyzeragents.analysis_system import ContentPack, _open_market_suggestion_interval, generate_intraday_suggestion, service_loop
 from marketanalyzeragents.cli import build_parser, command_report, command_suggest
 
 
@@ -113,6 +115,46 @@ class ServiceCommandTests(unittest.TestCase):
         )
 
         self.assertEqual(interval, 1200)
+
+    def test_intraday_suggestion_records_quote_value_errors_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+
+            with patch("marketanalyzeragents.analysis_system.fetch_market_data", side_effect=ValueError("No usable market data returned for NVDA")), patch(
+                "marketanalyzeragents.analysis_system.collect_content",
+                return_value=ContentPack(official=[], social_posts=[], source_warnings=[]),
+            ), patch(
+                "marketanalyzeragents.analysis_system.current_market_sentiment",
+                return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
+            ):
+                result = generate_intraday_suggestion(root, backend="dry-run")
+
+        self.assertEqual(result["quote_count"], 0)
+        self.assertIn("No usable market data returned for NVDA", "\n".join(result["warnings"]))
+
+    def test_service_loop_records_task_error_and_keeps_loop_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            settings = json.loads((root / "config" / "settings.json").read_text(encoding="utf-8"))
+            settings["report_schedule"] = ["08:00"]
+            (root / "config" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+            fixed_now = datetime(2026, 7, 10, 8, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+            with patch("marketanalyzeragents.analysis_system.beijing_now", return_value=fixed_now), patch(
+                "marketanalyzeragents.analysis_system.generate_market_report",
+                side_effect=ValueError("report boom"),
+            ), patch("marketanalyzeragents.analysis_system.dashboard_state", return_value={"markets": {}}), patch(
+                "marketanalyzeragents.analysis_system.time.sleep",
+                side_effect=SystemExit,
+            ), self.assertRaises(SystemExit):
+                service_loop(root, tick_seconds=1)
+
+            status = json.loads((root / "state" / "service_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status["last_error"]["task"], "scheduled_report")
+        self.assertEqual(status["last_error"]["message"], "report boom")
 
 
 if __name__ == "__main__":

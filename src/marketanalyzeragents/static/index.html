@@ -25,9 +25,16 @@
       <div class="home-grid">
         <section>
           <div class="section-head">
-            <h2>当天市场分析报告</h2>
-            <button id="run-report" type="button">立即生成</button>
+            <div>
+              <h2>最新市场分析报告</h2>
+              <span class="subtle" id="latest-report-time"></span>
+            </div>
+            <div class="inline-actions">
+              <button class="secondary" data-open-tab="archive" type="button">历史报告</button>
+              <button id="run-report" type="button">立即生成</button>
+            </div>
           </div>
+          <div class="run-status" id="report-run-status" hidden></div>
           <article class="markdown-body" id="latest-report"></article>
         </section>
         <aside>
@@ -182,6 +189,14 @@
                 <div>
                   <label>X 关注博主</label>
                   <textarea name="x_accounts"></textarea>
+                </div>
+                <div>
+                  <label>X 关键词采集条数</label>
+                  <input type="number" name="x_keyword_max_results" min="1" max="100" step="1" />
+                </div>
+                <div>
+                  <label>X 每个博主采集条数</label>
+                  <input type="number" name="x_account_max_results_per_account" min="1" max="100" step="1" />
                 </div>
                 <div>
                   <label>小红书关注博主</label>
