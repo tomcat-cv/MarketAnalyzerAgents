@@ -39,30 +39,19 @@
       "holdings": []
     },
     "us_equities": {
-      "holdings": [
-        {
-          "company": "NVIDIA",
-          "symbol": "NVDA",
-          "themes": [
-            "AI 算力",
-            "数据中心"
-          ],
-          "ticker": "NVDA"
-        }
-      ]
+      "holdings": []
     }
   },
   "social_sources": {
     "x": {
+      "account_max_results_per_account": 20,
       "accounts": [
         "serenity"
       ],
       "adapter": "x_api",
       "api_key_env": "TWITTERAPI_IO_API_KEY",
-      "keyword_max_results": 20,
-      "account_max_results_per_account": 20,
-      "request_interval_seconds": 5,
       "enabled": true,
+      "keyword_max_results": 20,
       "keywords": [
         "NVDA",
         "NVIDIA",
@@ -72,7 +61,8 @@
         "AI capex",
         "GPU",
         "data center"
-      ]
+      ],
+      "request_interval_seconds": 5
     },
     "xiaohongshu": {
       "accounts": [],

@@ -22,6 +22,7 @@ from .market_sentiment import collect_market_sentiment
 from .openai_runner import run_openai
 from .portfolio_snapshots import normalize_holding
 from .social_adapters import SocialPost, collect_social_posts
+from .stock_profiles import lookup_stock_profile
 from .writer import markdown_to_html, write_json, write_json_atomic, write_text
 from .zhipu_runner import run_zhipu
 
@@ -181,6 +182,7 @@ def configured_social_keywords(sources: Mapping[str, Any]) -> list[str]:
     for topic in configured_topics(sources):
         values.append(str(topic.get("name", "")))
         values.extend(_string_list(topic.get("keywords", [])))
+    values.extend(_string_list(sources.get("custom_keywords", [])))
     return _dedupe_strings(values)
 
 
@@ -260,7 +262,7 @@ def _model_configuration(settings: Mapping[str, Any]) -> dict[str, Any]:
         "zhipu_model": str(zhipu_settings.get("model", "")),
         "openai_api_key_set": bool(str(openai_settings.get("api_key", "")).strip()),
         "zhipu_api_key_set": bool(str(zhipu_settings.get("api_key", "")).strip()),
-        "advice_backend": str(intraday.get("advice_backend", backend)),
+        "advice_backend": backend,
         "debate_rounds": int(intraday.get("debate_rounds", 1)),
         "report_schedule": list(settings.get("report_schedule", REPORT_SCHEDULES)),
         "intraday_suggestion_interval_seconds": int(settings.get("intraday_suggestion_interval_seconds", 1800)),
@@ -283,6 +285,7 @@ def update_model_configuration(root: Path, payload: Mapping[str, Any]) -> dict[s
         raise ValueError("model provider settings must be JSON objects")
     if not isinstance(settings["intraday_agents"], dict):
         settings["intraday_agents"] = {}
+    settings["intraday_agents"]["advice_backend"] = backend
     openai_model = str(payload.get("openai_model", "")).strip()
     zhipu_model = str(payload.get("zhipu_model", "")).strip()
     openai_api_key = str(payload.get("openai_api_key", "")).strip()
@@ -302,11 +305,6 @@ def update_model_configuration(root: Path, payload: Mapping[str, Any]) -> dict[s
     if backend == "zhipu" and (model or zhipu_model):
         settings["zhipu"]["model"] = model or zhipu_model
         settings["model"] = model or zhipu_model
-    advice_backend = str(payload.get("advice_backend", "")).strip()
-    if advice_backend:
-        if advice_backend not in {"zhipu", "openai", "dry-run"}:
-            raise ValueError("advice_backend must be zhipu, openai, or dry-run")
-        settings["intraday_agents"]["advice_backend"] = advice_backend
     if str(payload.get("debate_rounds", "")).strip():
         rounds = int(payload["debate_rounds"])
         if rounds < 1 or rounds > 3:
@@ -332,7 +330,17 @@ def upsert_holding(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
     market = str(payload.get("market", "")).strip()
     if market not in MARKETS:
         raise ValueError("market must be a_share or us_equities")
-    value = normalize_holding(market, payload)
+    collectors = settings.get("collectors", {})
+    if not isinstance(collectors, Mapping):
+        collectors = {}
+    client = HttpClient(
+        user_agent=str(collectors.get("user_agent", "market-analyzer-agents/0.1")),
+        timeout=int(collectors.get("timeout_seconds", 30)),
+        max_retries=int(collectors.get("max_retries", 2)),
+        retry_backoff_seconds=float(collectors.get("retry_backoff_seconds", 1.0)),
+    )
+    profile = lookup_stock_profile(client, market, str(payload.get("ticker", "")))
+    value = normalize_holding(market, {**profile, **{key: payload[key] for key in ("quantity", "cost_basis") if key in payload}})
     holdings = sources.setdefault("portfolios", {}).setdefault(market, {}).setdefault("holdings", [])
     if not isinstance(holdings, list):
         raise ValueError("holdings must be a list")
@@ -407,6 +415,8 @@ def update_source_configuration(root: Path, payload: Mapping[str, Any]) -> dict[
     settings = load_settings(root)
     sources = read_sources(root, settings)
     sources["official_sources"] = payload.get("official_sources", [])
+    if "custom_keywords" in payload:
+        sources["custom_keywords"] = _dedupe_strings(_string_list(payload.get("custom_keywords", [])))
     sources["social_sources"] = _normalize_social_sources(
         payload.get("social_sources", {}),
         sources.get("social_sources", {}),
@@ -1113,7 +1123,7 @@ def generate_intraday_suggestion(root: Path, *, backend: str | None = None) -> d
             settings,
             system=system,
             user=json.dumps(payload, ensure_ascii=False, indent=2),
-            backend=backend or str(intraday_settings.get("advice_backend", settings.get("backend", "zhipu"))),
+            backend=backend or str(settings.get("backend", "zhipu")),
         )
     except Exception as exc:
         pack.source_warnings.append(f"model: {exc}")
@@ -1203,6 +1213,7 @@ def dashboard_state(root: Path) -> dict[str, Any]:
         "official_sources": official,
         "social_sources": social_sources,
         "social_keywords": configured_social_keywords(sources),
+        "custom_keywords": _string_list(sources.get("custom_keywords", [])),
         "market_sentiment": market_sentiment,
         "warnings": sentiment_warnings,
         "service_status": dict(service_status),

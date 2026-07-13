@@ -1,4 +1,4 @@
-const state = { data: null, configDirty: false, reportPollTimer: null, reportElapsedTimer: null, reportStatus: null };
+const state = { data: null, configDirty: false, reportPollTimer: null, reportElapsedTimer: null, reportStatus: null, holdingProfile: null, customKeywords: [] };
 
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
   "&": "&amp;",
@@ -300,38 +300,18 @@ function renderHoldingConfig(holdings) {
     root.innerHTML = `<div class="empty">还没有配置持仓。</div>`;
     return;
   }
-  root.innerHTML = `<table><thead><tr><th>标的</th><th>市场</th><th>主题</th><th></th></tr></thead><tbody>${holdings.map(item => `
+  root.innerHTML = `<table><thead><tr><th>标的</th><th>市场</th><th>业务领域</th><th>官方来源</th><th></th></tr></thead><tbody>${holdings.map(item => `
     <tr>
-      <td><div class="ticker">${esc(item.ticker)}</div><div class="subtle">${esc(item.company || "")}</div></td>
+      <td><div class="ticker">${esc(item.ticker)}</div><div class="subtle">${esc(item.company_name_zh || item.company || "")}</div><div class="subtle">${esc(item.company_name_en || "")}</div></td>
       <td>${marketLabel(item.market)}</td>
-      <td>${(item.themes || []).map(theme => `<span class="pill">${esc(theme)}</span>`).join("")}</td>
+      <td>${(item.business_domains || item.themes || []).map(theme => `<span class="pill">${esc(theme)}</span>`).join("")}</td>
+      <td>${(item.official_sources || []).map(source => `<a class="source-link" href="${esc(source.url)}" target="_blank" rel="noreferrer">${esc(source.name)}</a>`).join("")}</td>
       <td><button class="danger" data-delete-holding="${esc(item.market)}:${esc(item.ticker)}" type="button">删除</button></td>
     </tr>`).join("")}</tbody></table>`;
   root.querySelectorAll("[data-delete-holding]").forEach(button => {
     button.addEventListener("click", async () => {
       const [market, ticker] = button.dataset.deleteHolding.split(":");
       await postJson("/api/holdings/delete", {market, ticker});
-      await refresh();
-    });
-  });
-}
-
-function renderTopicConfig(topics) {
-  document.getElementById("topic-config-count").textContent = `${topics.length} 个`;
-  const root = document.getElementById("topic-config-list");
-  if (!topics.length) {
-    root.innerHTML = `<div class="empty">还没有配置 Topic。</div>`;
-    return;
-  }
-  root.innerHTML = `<table><thead><tr><th>Topic</th><th>关键词</th><th></th></tr></thead><tbody>${topics.map(item => `
-    <tr>
-      <td><div class="ticker">${esc(item.name)}</div><div class="subtle">${esc(item.id)}</div></td>
-      <td>${(item.keywords || []).map(word => `<span class="pill">${esc(word)}</span>`).join("")}</td>
-      <td><button class="danger" data-delete-topic="${esc(item.id)}" type="button">删除</button></td>
-    </tr>`).join("")}</tbody></table>`;
-  root.querySelectorAll("[data-delete-topic]").forEach(button => {
-    button.addEventListener("click", async () => {
-      await postJson("/api/topics/delete", {id: button.dataset.deleteTopic});
       await refresh();
     });
   });
@@ -353,16 +333,14 @@ function renderConfig(data) {
   const config = data.configuration || {};
   model.backend.value = config.backend || "zhipu";
   model.model.value = config.model || "";
-  model.zhipu_model.value = config.zhipu_model || "";
-  model.openai_model.value = config.openai_model || "";
-  model.zhipu_api_key.value = "";
-  model.zhipu_api_key.placeholder = config.zhipu_api_key_set ? "已保存，留空不修改" : "请输入智谱 API Key";
-  model.openai_api_key.value = "";
-  model.openai_api_key.placeholder = config.openai_api_key_set ? "已保存，留空不修改" : "请输入 OpenAI API Key";
-  model.advice_backend.value = config.advice_backend || "zhipu";
+  model.api_key.value = "";
   model.debate_rounds.value = config.debate_rounds || 1;
   model.report_schedule.value = (config.report_schedule || data.report_schedule || []).join(", ");
   model.intraday_suggestion_interval_seconds.value = config.intraday_suggestion_interval_seconds || 1800;
+  const provider = {zhipu: "智谱", openai: "OpenAI", "dry-run": "Dry run"}[config.backend] || config.backend;
+  const keySet = config.backend === "openai" ? config.openai_api_key_set : config.zhipu_api_key_set;
+  document.getElementById("model-summary").innerHTML = `<div><span>当前供应商</span><strong>${esc(provider)}</strong></div><div><span>模型</span><strong>${esc(config.model || "--")}</strong></div><div><span>API Key</span><strong>${keySet ? "已配置" : "未配置"}</strong></div><div><span>报告时点</span><strong>${esc((config.report_schedule || []).join(" / "))}</strong></div>`;
+  updateProviderLabels();
 
   const source = document.getElementById("source-form");
   source.official_sources.value = (data.official_sources || []).map(item => `${item.name || ""} | ${item.url || ""} | ${(item.topics || []).join(", ")}`).join("\n");
@@ -371,7 +349,26 @@ function renderConfig(data) {
   source.x_keyword_max_results.value = (social.x || {}).keyword_max_results || (social.x || {}).max_results || 20;
   source.x_account_max_results_per_account.value = (social.x || {}).account_max_results_per_account || (social.x || {}).max_results || 20;
   source.xiaohongshu_accounts.value = ((social.xiaohongshu || {}).accounts || []).join("\n");
-  source.social_keywords.value = (data.social_keywords || []).join("\n");
+  state.customKeywords = [...(data.custom_keywords || [])];
+  renderKeywords(data.social_keywords || []);
+}
+
+function renderKeywords(allKeywords) {
+  allKeywords = [...allKeywords, ...state.customKeywords].filter((word, index, values) => values.findIndex(item => item.toLocaleLowerCase() === word.toLocaleLowerCase()) === index);
+  const custom = new Set(state.customKeywords.map(item => item.toLocaleLowerCase()));
+  document.getElementById("keyword-collection").innerHTML = allKeywords.map(word => `<span class="keyword-chip">${esc(word)}${custom.has(word.toLocaleLowerCase()) ? `<button type="button" data-remove-keyword="${esc(word)}" aria-label="删除 ${esc(word)}">×</button>` : `<small>自动</small>`}</span>`).join("");
+  document.querySelectorAll("[data-remove-keyword]").forEach(button => button.addEventListener("click", () => {
+    state.customKeywords = state.customKeywords.filter(word => word.toLocaleLowerCase() !== button.dataset.removeKeyword.toLocaleLowerCase());
+    state.configDirty = true;
+    renderKeywords((state.data.social_keywords || []).filter(word => word.toLocaleLowerCase() !== button.dataset.removeKeyword.toLocaleLowerCase()));
+  }));
+}
+
+function updateProviderLabels() {
+  const backend = document.getElementById("model-form").backend.value;
+  const label = {zhipu: "智谱", openai: "OpenAI", "dry-run": "Dry run"}[backend];
+  document.getElementById("provider-model-label").textContent = `${label} 模型名称`;
+  document.getElementById("provider-key-label").textContent = `${label} API Key`;
 }
 
 function render(data) {
@@ -385,7 +382,6 @@ function render(data) {
   renderTracking(data);
   renderArchive(data.reports || []);
   renderHoldingConfig(data.holdings || []);
-  renderTopicConfig(data.custom_focus_topics || []);
   renderConfig(data);
 }
 
@@ -410,39 +406,24 @@ document.querySelectorAll("form").forEach(form => {
 document.getElementById("model-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await postJson("/api/model-config", Object.fromEntries(form.entries()));
+  const payload = Object.fromEntries(form.entries());
+  if (payload.backend === "openai") payload.openai_api_key = payload.api_key;
+  if (payload.backend === "zhipu") payload.zhipu_api_key = payload.api_key;
+  await postJson("/api/model-config", payload);
   state.configDirty = false;
   toast("模型配置已保存");
+  document.getElementById("model-dialog").close();
   await refresh();
 });
 
 document.getElementById("holding-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await postJson("/api/holdings", {
-    market: form.get("market"),
-    ticker: form.get("ticker"),
-    symbol: form.get("symbol"),
-    company: form.get("company"),
-    themes: lines(form.get("themes"))
-  });
+  if (!state.holdingProfile) return;
+  await postJson("/api/holdings", {market: form.get("market"), ticker: form.get("ticker")});
   event.target.reset();
-  state.configDirty = false;
+  state.configDirty = false; state.holdingProfile = null;
   toast("持仓已保存");
-  await refresh();
-});
-
-document.getElementById("topic-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  const form = new FormData(event.target);
-  await postJson("/api/topics", {
-    id: form.get("id"),
-    name: form.get("name"),
-    keywords: lines(form.get("keywords"))
-  });
-  event.target.reset();
-  state.configDirty = false;
-  toast("Topic 已保存");
   await refresh();
 });
 
@@ -455,6 +436,7 @@ document.getElementById("source-form").addEventListener("submit", async event =>
   }).filter(item => item.name && item.url);
   await postJson("/api/sources", {
     official_sources: official,
+    custom_keywords: state.customKeywords,
     social_sources: {
       x: {
         enabled: true,
@@ -469,6 +451,41 @@ document.getElementById("source-form").addEventListener("submit", async event =>
   toast("来源配置已保存");
   await refresh();
 });
+
+document.getElementById("lookup-holding").addEventListener("click", async () => {
+  const form = document.getElementById("holding-form");
+  const button = document.getElementById("lookup-holding");
+  button.disabled = true; button.textContent = "核验中";
+  try {
+    const profile = await postJson("/api/holdings/lookup", {market: form.market.value, ticker: form.ticker.value});
+    state.holdingProfile = profile;
+    document.getElementById("holding-preview").className = "profile-preview";
+    document.getElementById("holding-preview").innerHTML = `<div><span>中文名称</span><strong>${esc(profile.company_name_zh)}</strong></div><div><span>英文名称</span><strong>${esc(profile.company_name_en)}</strong></div><div class="wide"><span>业务领域</span><div>${profile.business_domains.map(word => `<span class="pill">${esc(word)}</span>`).join("")}</div></div><div class="wide"><span>官方资讯来源</span><div>${profile.official_sources.map(source => `<a class="source-link" href="${esc(source.url)}" target="_blank" rel="noreferrer">${esc(source.name)}</a>`).join("")}</div></div>`;
+    form.querySelector('[type="submit"]').disabled = false;
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; button.textContent = "核验"; }
+});
+
+document.getElementById("holding-form").addEventListener("reset", () => {
+  state.holdingProfile = null;
+  document.getElementById("holding-preview").className = "profile-preview empty";
+  document.getElementById("holding-preview").textContent = "核验后将显示中英文名称、业务领域和官方资讯来源。";
+  document.getElementById("holding-form").querySelector('[type="submit"]').disabled = true;
+});
+
+document.getElementById("add-keyword").addEventListener("click", () => {
+  const input = document.getElementById("source-form").new_keyword;
+  const word = input.value.trim();
+  if (!word || state.customKeywords.some(item => item.toLocaleLowerCase() === word.toLocaleLowerCase())) return;
+  state.customKeywords.push(word); input.value = ""; state.configDirty = true;
+  renderKeywords([...(state.data.social_keywords || []), word]);
+});
+
+document.getElementById("edit-model").addEventListener("click", () => document.getElementById("model-dialog").showModal());
+function cancelModelDialog() { document.getElementById("model-dialog").close(); state.configDirty = false; renderConfig(state.data); }
+document.getElementById("close-model").addEventListener("click", cancelModelDialog);
+document.getElementById("cancel-model").addEventListener("click", cancelModelDialog);
+document.getElementById("model-form").backend.addEventListener("change", updateProviderLabels);
 
 document.getElementById("run-report").addEventListener("click", async () => {
   try {

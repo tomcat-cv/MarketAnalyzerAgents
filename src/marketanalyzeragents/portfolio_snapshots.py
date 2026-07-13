@@ -27,6 +27,17 @@ def normalize_holding(market: str, payload: Mapping[str, Any]) -> dict[str, Any]
         "company": company,
         "themes": [str(value).strip() for value in raw_themes if str(value).strip()],
     }
+    for key in ("company_name_zh", "company_name_en"):
+        value = str(payload.get(key, "")).strip()
+        if value:
+            result[key] = value
+    domains = payload.get("business_domains", result["themes"])
+    if isinstance(domains, list):
+        result["business_domains"] = [str(value).strip() for value in domains if str(value).strip()]
+    official_sources = payload.get("official_sources", [])
+    if isinstance(official_sources, list):
+        result["official_sources"] = [dict(value) for value in official_sources if isinstance(value, Mapping)]
+    result["verified"] = bool(payload.get("verified", False))
     for key in ("quantity", "cost_basis"):
         if payload.get(key) not in (None, ""):
             result[key] = float(payload[key])

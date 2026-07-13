@@ -21,6 +21,15 @@ from marketanalyzeragents.social_adapters import SocialPost
 from marketanalyzeragents.web import ReportRunState
 
 
+VERIFIED_MRVL = {
+    "ticker": "MRVL", "symbol": "MRVL", "company": "Marvell Technology, Inc.",
+    "company_name_zh": "迈威尔科技", "company_name_en": "Marvell Technology, Inc.",
+    "themes": ["Semiconductors"], "business_domains": ["Semiconductors"],
+    "official_sources": [{"name": "SEC EDGAR", "url": "https://www.sec.gov/edgar/browse/?CIK=MRVL", "type": "disclosure"}],
+    "verified": True,
+}
+
+
 class WebCoreTests(unittest.TestCase):
     def _write_project(self, root: Path) -> None:
         (root / "config").mkdir()
@@ -97,16 +106,8 @@ class WebCoreTests(unittest.TestCase):
             root = Path(tmp)
             self._write_project(root)
 
-            upsert_holding(
-                root,
-                {
-                    "market": "us_equities",
-                    "ticker": "MRVL",
-                    "symbol": "MRVL",
-                    "company": "Marvell",
-                    "themes": ["custom silicon"],
-                },
-            )
+            with patch("marketanalyzeragents.analysis_system.lookup_stock_profile", return_value=VERIFIED_MRVL):
+                upsert_holding(root, {"market": "us_equities", "ticker": "MRVL"})
             delete_holding(root, {"market": "us_equities", "ticker": "NVDA"})
 
             sources = json.loads((root / "config" / "sources.json").read_text(encoding="utf-8"))
@@ -177,7 +178,7 @@ class WebCoreTests(unittest.TestCase):
         self.assertEqual(settings["zhipu"]["api_key"], "zhipu-test")
         self.assertTrue(config["openai_api_key_set"])
         self.assertTrue(config["zhipu_api_key_set"])
-        self.assertEqual(settings["intraday_agents"]["advice_backend"], "dry-run")
+        self.assertEqual(settings["intraday_agents"]["advice_backend"], "openai")
         self.assertEqual(settings["report_schedule"], ["09:00", "15:30"])
         self.assertEqual(settings["intraday_suggestion_interval_seconds"], 600)
 

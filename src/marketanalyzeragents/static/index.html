@@ -72,72 +72,18 @@
       </section>
     </div>
     <div class="tab-panel" id="tab-config" hidden>
-      <div class="config-grid">
-        <div>
+      <div class="config-stack">
+        <section>
+          <div class="section-head">
+            <div><h2>基础大模型供应商</h2><span class="subtle">报告、盘中建议与辩论统一使用</span></div>
+            <button class="secondary" id="edit-model" type="button">修改</button>
+          </div>
+          <div class="model-summary" id="model-summary"></div>
+        </section>
+        <div class="config-grid">
           <section>
             <div class="section-head">
-              <h2>分析报告模型配置</h2>
-              <span class="subtle">config/settings.json</span>
-            </div>
-            <form id="model-form">
-              <div class="form-grid">
-                <div>
-                  <label>报告模型服务商</label>
-                  <select name="backend">
-                    <option value="zhipu">智谱</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="dry-run">Dry run</option>
-                  </select>
-                </div>
-                <div>
-                  <label>当前模型</label>
-                  <input name="model" placeholder="glm-5.1 / gpt-5.4">
-                </div>
-                <div>
-                  <label>智谱模型</label>
-                  <input name="zhipu_model" placeholder="glm-5.1">
-                </div>
-                <div>
-                  <label>OpenAI 模型</label>
-                  <input name="openai_model" placeholder="gpt-5.4">
-                </div>
-                <div>
-                  <label>智谱 API Key</label>
-                  <input name="zhipu_api_key" autocomplete="off" placeholder="已保存则留空">
-                </div>
-                <div>
-                  <label>OpenAI API Key</label>
-                  <input name="openai_api_key" autocomplete="off" placeholder="已保存则留空">
-                </div>
-                <div>
-                  <label>盘中建议模型服务商</label>
-                  <select name="advice_backend">
-                    <option value="zhipu">智谱</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="dry-run">Dry run</option>
-                  </select>
-                </div>
-                <div>
-                  <label>讨论轮数</label>
-                  <input name="debate_rounds" type="number" min="1" max="3" step="1">
-                </div>
-                <div>
-                  <label>默认报告时间</label>
-                  <input name="report_schedule" placeholder="08:00, 14:00, 20:00">
-                </div>
-                <div>
-                  <label>盘中建议间隔秒数</label>
-                  <input name="intraday_suggestion_interval_seconds" type="number" min="60" step="60">
-                </div>
-              </div>
-              <div class="actions">
-                <button type="submit">保存模型</button>
-              </div>
-            </form>
-          </section>
-          <section>
-            <div class="section-head">
-              <h2>持仓配置</h2>
+              <div><h2>持仓配置</h2><span class="subtle">输入代码后自动核验并补全公司资料</span></div>
               <span class="subtle" id="holding-config-count"></span>
             </div>
             <form id="holding-form">
@@ -151,37 +97,29 @@
                 </div>
                 <div>
                   <label>代码</label>
-                  <input name="ticker" required>
-                </div>
-                <div>
-                  <label>行情代码</label>
-                  <input name="symbol">
-                </div>
-                <div>
-                  <label>名称</label>
-                  <input name="company">
-                </div>
-                <div class="wide">
-                  <label>相关主题</label>
-                  <textarea name="themes" placeholder="AI 算力&#10;出口管制"></textarea>
+                  <div class="input-action"><input name="ticker" required autocomplete="off"><button class="secondary" id="lookup-holding" type="button">核验</button></div>
                 </div>
               </div>
+              <div class="profile-preview empty" id="holding-preview">核验后将显示中英文名称、业务领域和官方资讯来源。</div>
               <div class="actions">
                 <button class="secondary" type="reset">清空</button>
-                <button type="submit">保存持仓</button>
+                <button type="submit" disabled>添加持仓</button>
               </div>
             </form>
             <div id="holding-config-list"></div>
           </section>
-        </div>
-        <div>
           <section>
             <div class="section-head">
-              <h2>资讯与社媒来源</h2>
+              <div><h2>资讯与社媒来源</h2><span class="subtle">自动关键词与自定义关键词统一生效</span></div>
               <span class="subtle">官方资讯 / X / 小红书</span>
             </div>
             <form id="source-form">
               <div class="form-grid">
+                <div class="wide">
+                  <label>当前关注关键词</label>
+                  <div class="keyword-editor" id="keyword-collection"></div>
+                  <div class="input-action"><input name="new_keyword" placeholder="添加一个关键词"><button class="secondary" id="add-keyword" type="button">添加</button></div>
+                </div>
                 <div class="wide">
                   <label>官方 RSS 来源，每行：名称 | URL | 主题逗号分隔</label>
                   <textarea name="official_sources"></textarea>
@@ -202,47 +140,30 @@
                   <label>小红书关注博主</label>
                   <textarea name="xiaohongshu_accounts"></textarea>
                 </div>
-                <div class="wide">
-                  <label>自动关注关键词</label>
-                  <textarea name="social_keywords" readonly></textarea>
-                </div>
               </div>
               <div class="actions">
                 <button type="submit">保存来源</button>
               </div>
             </form>
           </section>
-          <section>
-            <div class="section-head">
-              <h2>关注 Topic</h2>
-              <span class="subtle" id="topic-config-count"></span>
-            </div>
-            <form id="topic-form">
-              <div class="form-grid">
-                <div>
-                  <label>ID</label>
-                  <input name="id" required>
-                </div>
-                <div>
-                  <label>名称</label>
-                  <input name="name">
-                </div>
-                <div class="wide">
-                  <label>关键词</label>
-                  <textarea name="keywords"></textarea>
-                </div>
-              </div>
-              <div class="actions">
-                <button class="secondary" type="reset">清空</button>
-                <button type="submit">保存 Topic</button>
-              </div>
-            </form>
-            <div id="topic-config-list"></div>
-          </section>
         </div>
       </div>
     </div>
   </main>
+  <dialog id="model-dialog">
+    <form id="model-form">
+      <div class="dialog-head"><div><h2>修改基础大模型供应商</h2><span class="subtle">API Key 不会在页面回显</span></div><button class="icon-button" id="close-model" type="button" aria-label="关闭">×</button></div>
+      <div class="form-grid">
+        <div class="wide"><label>供应商</label><select name="backend"><option value="zhipu">智谱</option><option value="openai">OpenAI</option><option value="dry-run">Dry run</option></select></div>
+        <div><label id="provider-model-label">模型名称</label><input name="model"></div>
+        <div><label id="provider-key-label">API Key</label><input name="api_key" type="password" autocomplete="new-password"></div>
+        <div><label>讨论轮数</label><input name="debate_rounds" type="number" min="1" max="3" step="1"></div>
+        <div><label>盘中建议间隔（秒）</label><input name="intraday_suggestion_interval_seconds" type="number" min="60" step="60"></div>
+        <div class="wide"><label>默认报告时间</label><input name="report_schedule"></div>
+      </div>
+      <div class="actions"><button class="secondary" id="cancel-model" type="button">取消</button><button type="submit">保存配置</button></div>
+    </form>
+  </dialog>
   <div class="toast" id="toast"></div>
   <script src="/static/app.js"></script>
 </body>

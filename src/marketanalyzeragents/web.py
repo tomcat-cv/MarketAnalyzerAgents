@@ -23,6 +23,8 @@ from .analysis_system import (
     upsert_holding,
     upsert_topic,
 )
+from .collectors_core import HttpClient
+from .stock_profiles import lookup_stock_profile
 from .config import find_project_root, load_settings, resolve_path
 
 
@@ -184,6 +186,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(update_source_configuration(self.root, payload))
             elif self.path == "/api/holdings":
                 self._send_json(upsert_holding(self.root, payload))
+            elif self.path == "/api/holdings/lookup":
+                settings = load_settings(self.root)
+                collectors = settings.get("collectors", {})
+                client = HttpClient(
+                    user_agent=str(collectors.get("user_agent", "market-analyzer-agents/0.1")),
+                    timeout=int(collectors.get("timeout_seconds", 30)),
+                    max_retries=int(collectors.get("max_retries", 2)),
+                    retry_backoff_seconds=float(collectors.get("retry_backoff_seconds", 1.0)),
+                )
+                self._send_json(lookup_stock_profile(client, str(payload.get("market", "")), str(payload.get("ticker", ""))))
             elif self.path == "/api/holdings/delete":
                 self._send_json(delete_holding(self.root, payload))
             elif self.path == "/api/topics":
