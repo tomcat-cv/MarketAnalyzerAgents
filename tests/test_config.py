@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -55,6 +56,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings["markets"]["a_share"]["holidays"], ["2026-10-01"])
         self.assertEqual(settings["markets"]["a_share"]["poll_interval_seconds"], 30)
         self.assertEqual(settings["sources_path"], "config/sources.json")
+
+    def test_settings_are_migrated_to_sqlite_configuration_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "config" / "settings.json").write_text('{"backend": "dry-run"}', encoding="utf-8")
+
+            self.assertEqual(load_settings(root)["backend"], "dry-run")
+            with sqlite3.connect(root / "state" / "configuration.db") as connection:
+                row = connection.execute(
+                    "SELECT name FROM configuration_documents WHERE name='settings'"
+                ).fetchone()
+
+        self.assertEqual(row, ("settings",))
 
 if __name__ == "__main__":
     unittest.main()

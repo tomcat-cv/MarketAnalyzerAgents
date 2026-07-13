@@ -22,45 +22,7 @@
   <main>
     <div class="tab-panel" id="tab-home">
       <div class="overview-grid" id="overview"></div>
-      <div class="home-grid">
-        <section>
-          <div class="section-head">
-            <div>
-              <h2>最新市场分析报告</h2>
-              <span class="subtle" id="latest-report-time"></span>
-            </div>
-            <div class="inline-actions">
-              <button class="secondary" data-open-tab="archive" type="button">历史报告</button>
-              <button id="run-report" type="button">立即生成</button>
-            </div>
-          </div>
-          <div class="run-status" id="report-run-status" hidden></div>
-          <article class="markdown-body" id="latest-report"></article>
-        </section>
-        <aside>
-          <section>
-            <div class="section-head">
-              <h2>市场情绪</h2>
-              <span class="subtle" id="sentiment-status"></span>
-            </div>
-            <div id="market-sentiment"></div>
-          </section>
-          <section>
-            <div class="section-head">
-              <h2>盘中操作建议</h2>
-              <button class="secondary" id="run-suggestion" type="button">刷新建议</button>
-            </div>
-            <div class="alerts" id="suggestions"></div>
-          </section>
-          <section>
-            <div class="section-head">
-              <h2>持仓与关注 Topic</h2>
-              <span class="subtle" id="tracking-count"></span>
-            </div>
-            <div id="tracking"></div>
-          </section>
-        </aside>
-      </div>
+      <div id="market-home-sections"></div>
     </div>
     <div class="tab-panel" id="tab-archive" hidden>
       <section>
@@ -68,7 +30,8 @@
           <h2>历史报告</h2>
           <span class="subtle">state/analysis/reports</span>
         </div>
-        <div class="brief-list" id="reports"></div>
+        <h3>美股</h3><div class="brief-list" id="reports-us_equities"></div>
+        <h3>A 股</h3><div class="brief-list" id="reports-a_share"></div>
       </section>
     </div>
     <div class="tab-panel" id="tab-config" hidden>
@@ -99,12 +62,22 @@
                   <label>代码</label>
                   <div class="input-action"><input name="ticker" required autocomplete="off"><button class="secondary" id="lookup-holding" type="button">核验</button></div>
                 </div>
+                <div><label>持有份额</label><input name="quantity" type="number" min="0" step="any" required></div>
+                <div><label>单位成本价</label><input name="cost_basis" type="number" min="0" step="any" required></div>
               </div>
               <div class="profile-preview empty" id="holding-preview">核验后将显示中英文名称、业务领域和官方资讯来源。</div>
               <div class="actions">
                 <button class="secondary" type="reset">清空</button>
                 <button type="submit" disabled>添加持仓</button>
               </div>
+            </form>
+            <form id="portfolio-form">
+              <div class="form-grid">
+                <div><label>市场</label><select name="market"><option value="us_equities">美股</option><option value="a_share">A 股</option></select></div>
+                <div><label>市场组合净值</label><input name="portfolio_nav" type="number" min="0.01" step="any" required></div>
+                <div><label>币种</label><select name="currency"><option value="USD">USD</option><option value="CNY">CNY</option></select></div>
+              </div>
+              <div class="actions"><button type="submit">保存市场净值</button></div>
             </form>
             <div id="holding-config-list"></div>
           </section>

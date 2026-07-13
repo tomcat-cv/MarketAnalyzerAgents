@@ -40,8 +40,10 @@ def normalize_holding(market: str, payload: Mapping[str, Any]) -> dict[str, Any]
     result["verified"] = bool(payload.get("verified", False))
     for key in ("quantity", "cost_basis"):
         if payload.get(key) not in (None, ""):
-            result[key] = float(payload[key])
+            number = float(payload[key])
+            if number < 0:
+                raise ValueError(f"{key} must be non-negative")
+            result[key] = number
     currency = str(payload.get("currency", "")).strip()
-    if currency:
-        result["currency"] = currency
+    result["currency"] = currency or ("USD" if market == "us_equities" else "CNY")
     return result

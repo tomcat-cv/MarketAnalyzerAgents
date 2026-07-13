@@ -164,8 +164,10 @@ function renderLatestReport(report) {
 }
 
 function renderReportRunStatus(status) {
-  const panel = document.getElementById("report-run-status");
-  const button = document.getElementById("run-report");
+  const market = status?.market || "us_equities";
+  const panel = document.getElementById(`report-run-status-${market}`);
+  const button = document.querySelector(`[data-run-report="${market}"]`);
+  if (!panel || !button) return;
   state.reportStatus = status || {state: "idle"};
   const runState = state.reportStatus.state || "idle";
   button.disabled = runState === "running";
@@ -184,6 +186,10 @@ function renderReportRunStatus(status) {
     : runState === "completed"
       ? `${state.reportStatus.result?.title || "最新报告"} 已自动刷新`
       : (state.reportStatus.message || "正在生成报告");
+  const nodes = state.reportStatus.result?.generation_nodes || [];
+  const nodeDetail = nodes.length
+    ? `<div class="subtle">${nodes.map(item => `${esc(item.status === "missing_configuration" ? "缺少配置" : "已降级")}：${esc(item.message || item.node)}`).join("<br>")}</div>`
+    : "";
   panel.hidden = false;
   panel.className = `run-status ${esc(runState)}`;
   panel.innerHTML = `
@@ -192,6 +198,7 @@ function renderReportRunStatus(status) {
       <span class="subtle">${esc(startedAt)}${startedAt ? " / " : ""}已等待 ${esc(formatDuration(elapsed))}</span>
     </div>
     <div class="subtle">${esc(detail)}</div>
+    ${nodeDetail}
     <div class="run-status-bar" aria-hidden="true"><span></span></div>
   `;
 }
@@ -293,6 +300,58 @@ function renderArchive(reports) {
   `).join("");
 }
 
+function renderMarketSections(data) {
+  const root = document.getElementById("market-home-sections");
+  root.innerHTML = ["us_equities", "a_share"].map(market => {
+    const view = (data.market_views || {})[market] || {};
+    return `<section class="market-block">
+      <div class="section-head"><div><h2>${marketLabel(market)}</h2><span class="subtle">独立报告、盘中建议与持仓上下文</span></div></div>
+      <div class="home-grid">
+        <section><div class="section-head"><div><h2>最新分析报告</h2><span class="subtle" id="latest-report-time-${market}"></span></div>
+          <button data-run-report="${market}" type="button">立即生成</button></div>
+          <div class="run-status" id="report-run-status-${market}" hidden></div>
+          <article class="markdown-body" id="latest-report-${market}"></article></section>
+        <aside>
+          <section><div class="section-head"><h2>市场情绪</h2><span class="subtle" id="sentiment-status-${market}"></span></div><div id="market-sentiment-${market}"></div></section>
+          <section><div class="section-head"><h2>盘中操作建议</h2><button class="secondary" data-run-suggestion="${market}" type="button">刷新建议</button></div><div class="alerts" id="suggestions-${market}"></div></section>
+          <section><div class="section-head"><h2>持仓与公共 Topic</h2><span class="subtle">净值 ${esc(view.portfolio_nav ?? "未配置")} ${esc(view.currency || "")}</span></div><div id="tracking-${market}"></div></section>
+        </aside>
+      </div></section>`;
+  }).join("");
+  for (const market of ["us_equities", "a_share"]) renderMarketView(market, (data.market_views || {})[market] || {}, data.custom_focus_topics || []);
+  root.querySelectorAll("[data-run-report]").forEach(button => button.addEventListener("click", () => runReport(button.dataset.runReport)));
+  root.querySelectorAll("[data-run-suggestion]").forEach(button => button.addEventListener("click", () => runSuggestion(button.dataset.runSuggestion)));
+}
+
+function renderMarketView(market, view, sharedTopics) {
+  const report = view.latest_report;
+  const reportRoot = document.getElementById(`latest-report-${market}`);
+  const reportTime = document.getElementById(`latest-report-time-${market}`);
+  if (!report) {
+    reportTime.textContent = "暂无生成记录";
+    reportRoot.innerHTML = `<div class="empty">还没有生成该市场报告。</div>`;
+  } else if (report.status === "failed") {
+    reportTime.textContent = `失败时间 ${formatTime(report.generated_at)} 北京时间`;
+    reportRoot.innerHTML = `<div class="run-status failed"><strong>生成失败：${esc(report.failed_stage || "unknown")}</strong><div>${esc(report.error || "未知错误")}</div></div>`;
+  } else {
+    reportTime.textContent = `生成时间 ${formatTime(report.generated_at)} 北京时间`;
+    reportRoot.innerHTML = `${markdownLite(report.markdown)}<p><a href="${esc(report.url)}" target="_blank">打开 HTML 报告</a></p>`;
+  }
+  const sentiment = view.market_sentiment || {};
+  document.getElementById(`sentiment-status-${market}`).textContent = sentiment.status || "";
+  const sentimentRoot = document.getElementById(`market-sentiment-${market}`);
+  sentimentRoot.innerHTML = sentiment.status === "pending"
+    ? `<div class="empty">${esc(sentiment.summary || "该市场情绪指标待补充。")}</div>`
+    : `<div class="sentiment-summary"><div><span>综合分</span><strong>${esc(sentiment.value || "--")}</strong><small>${esc(sentiment.label || "")}</small></div><p>${esc(sentiment.summary || "")}</p></div>`;
+  const suggestionRoot = document.getElementById(`suggestions-${market}`);
+  suggestionRoot.innerHTML = (view.suggestions || []).length ? (view.suggestions || []).map(item => item.status === "failed"
+    ? `<article class="alert"><div class="meta">${esc(formatTime(item.generated_at))}</div><div class="title">生成失败：${esc(item.failed_stage)}</div><div>${esc(item.error)}</div></article>`
+    : `<article class="alert"><div class="meta">${esc(formatTime(item.generated_at))}</div><div class="title">${esc(item.title)}</div><div>${markdownLite(item.markdown)}</div></article>`).join("")
+    : `<div class="empty">还没有盘中建议。</div>`;
+  const holdings = view.holdings || [];
+  document.getElementById(`tracking-${market}`).innerHTML = `<div class="card-list single">${holdings.map(item => `<article class="holding-card"><div class="ticker">${esc(item.ticker)}</div><div class="subtle">份额 ${esc(item.quantity ?? "--")} / 成本 ${esc(item.cost_basis ?? "--")} ${esc(item.currency || "")}</div></article>`).join("") || `<div class="empty compact">还没有配置持仓。</div>`}</div><div class="card-list single">${sharedTopics.map(item => `<article class="topic-card"><div class="ticker">${esc(item.name)}</div><div>${(item.keywords || []).map(word => `<span class="pill">${esc(word)}</span>`).join("")}</div></article>`).join("") || `<div class="empty compact">还没有公共 Topic。</div>`}</div>`;
+}
+
 function renderHoldingConfig(holdings) {
   document.getElementById("holding-config-count").textContent = `${holdings.length} 个`;
   const root = document.getElementById("holding-config-list");
@@ -300,10 +359,11 @@ function renderHoldingConfig(holdings) {
     root.innerHTML = `<div class="empty">还没有配置持仓。</div>`;
     return;
   }
-  root.innerHTML = `<table><thead><tr><th>标的</th><th>市场</th><th>业务领域</th><th>官方来源</th><th></th></tr></thead><tbody>${holdings.map(item => `
+  root.innerHTML = `<table><thead><tr><th>标的</th><th>市场</th><th>份额 / 成本</th><th>业务领域</th><th>官方来源</th><th></th></tr></thead><tbody>${holdings.map(item => `
     <tr>
       <td><div class="ticker">${esc(item.ticker)}</div><div class="subtle">${esc(item.company_name_zh || item.company || "")}</div><div class="subtle">${esc(item.company_name_en || "")}</div></td>
       <td>${marketLabel(item.market)}</td>
+      <td>${esc(item.quantity ?? "--")} / ${esc(item.cost_basis ?? "--")} ${esc(item.currency || "")}</td>
       <td>${(item.business_domains || item.themes || []).map(theme => `<span class="pill">${esc(theme)}</span>`).join("")}</td>
       <td>${(item.official_sources || []).map(source => `<a class="source-link" href="${esc(source.url)}" target="_blank" rel="noreferrer">${esc(source.name)}</a>`).join("")}</td>
       <td><button class="danger" data-delete-holding="${esc(item.market)}:${esc(item.ticker)}" type="button">删除</button></td>
@@ -341,6 +401,11 @@ function renderConfig(data) {
   const keySet = config.backend === "openai" ? config.openai_api_key_set : config.zhipu_api_key_set;
   document.getElementById("model-summary").innerHTML = `<div><span>当前供应商</span><strong>${esc(provider)}</strong></div><div><span>模型</span><strong>${esc(config.model || "--")}</strong></div><div><span>API Key</span><strong>${keySet ? "已配置" : "未配置"}</strong></div><div><span>报告时点</span><strong>${esc((config.report_schedule || []).join(" / "))}</strong></div>`;
   updateProviderLabels();
+  const portfolioForm = document.getElementById("portfolio-form");
+  const selectedMarket = portfolioForm.market.value || "us_equities";
+  const selectedPortfolio = (data.market_views || {})[selectedMarket] || {};
+  portfolioForm.portfolio_nav.value = selectedPortfolio.portfolio_nav ?? "";
+  portfolioForm.currency.value = selectedPortfolio.currency || (selectedMarket === "us_equities" ? "USD" : "CNY");
 
   const source = document.getElementById("source-form");
   source.official_sources.value = (data.official_sources || []).map(item => `${item.name || ""} | ${item.url || ""} | ${(item.topics || []).join(", ")}`).join("\n");
@@ -376,13 +441,18 @@ function render(data) {
   document.getElementById("clock").textContent = `更新时间 ${formatTime(data.generated_at)} ${data.display_timezone}`;
   renderMarketStatus(data.markets);
   renderOverview(data);
-  renderMarketSentiment(data.market_sentiment);
-  renderLatestReport(data.latest_report);
-  renderSuggestions(data.suggestions || []);
-  renderTracking(data);
-  renderArchive(data.reports || []);
+  renderMarketSections(data);
+  renderArchiveInto("reports-us_equities", ((data.market_views || {}).us_equities || {}).reports || []);
+  renderArchiveInto("reports-a_share", ((data.market_views || {}).a_share || {}).reports || []);
   renderHoldingConfig(data.holdings || []);
   renderConfig(data);
+}
+
+function renderArchiveInto(id, reports) {
+  const root = document.getElementById(id);
+  root.innerHTML = reports.length ? reports.map(report => report.status === "failed"
+    ? `<div class="brief-row"><span><strong>${esc(report.title)}</strong><br><span class="subtle">${esc(report.failed_stage)}：${esc(report.error)}</span></span><span class="subtle">${esc(formatTime(report.generated_at))}</span></div>`
+    : `<a class="brief-row" href="${esc(report.url)}" target="_blank"><span><strong>${esc(report.title)}</strong><br><span class="subtle">${esc(report.official_count || 0)} 官方 / ${esc(report.social_count || 0)} 社媒</span></span><span class="subtle">${esc(formatTime(report.generated_at))}</span></a>`).join("") : `<div class="empty">暂无历史记录。</div>`;
 }
 
 async function refresh() {
@@ -420,11 +490,26 @@ document.getElementById("holding-form").addEventListener("submit", async event =
   event.preventDefault();
   const form = new FormData(event.target);
   if (!state.holdingProfile) return;
-  await postJson("/api/holdings", {market: form.get("market"), ticker: form.get("ticker")});
+  await postJson("/api/holdings", {market: form.get("market"), ticker: form.get("ticker"), quantity: form.get("quantity"), cost_basis: form.get("cost_basis")});
   event.target.reset();
   state.configDirty = false; state.holdingProfile = null;
   toast("持仓已保存");
   await refresh();
+});
+
+document.getElementById("portfolio-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const payload = Object.fromEntries(new FormData(event.target).entries());
+  await postJson("/api/portfolio-config", payload);
+  state.configDirty = false;
+  toast("市场组合净值已保存");
+  await refresh();
+});
+document.getElementById("portfolio-form").market.addEventListener("change", event => {
+  const view = ((state.data || {}).market_views || {})[event.target.value] || {};
+  const form = document.getElementById("portfolio-form");
+  form.portfolio_nav.value = view.portfolio_nav ?? "";
+  form.currency.value = view.currency || (event.target.value === "us_equities" ? "USD" : "CNY");
 });
 
 document.getElementById("source-form").addEventListener("submit", async event => {
@@ -444,7 +529,7 @@ document.getElementById("source-form").addEventListener("submit", async event =>
         keyword_max_results: positiveInteger(form.get("x_keyword_max_results"), 20),
         account_max_results_per_account: positiveInteger(form.get("x_account_max_results_per_account"), 20)
       },
-      xiaohongshu: {enabled: true, accounts: lines(form.get("xiaohongshu_accounts"))}
+      xiaohongshu: {enabled: false, accounts: lines(form.get("xiaohongshu_accounts"))}
     }
   });
   state.configDirty = false;
@@ -487,22 +572,23 @@ document.getElementById("close-model").addEventListener("click", cancelModelDial
 document.getElementById("cancel-model").addEventListener("click", cancelModelDialog);
 document.getElementById("model-form").backend.addEventListener("change", updateProviderLabels);
 
-document.getElementById("run-report").addEventListener("click", async () => {
+async function runReport(market) {
   try {
-    renderReportRunStatus(await postJson("/api/report/run", {}));
+    renderReportRunStatus(await postJson("/api/report/run", {market}));
     startReportPolling();
     toast("已开始生成报告");
   } catch (error) {
-    renderReportRunStatus({state: "failed", error: error.message});
+    renderReportRunStatus({state: "failed", market, error: error.message});
     toast(error.message);
   }
-});
+}
 
-document.getElementById("run-suggestion").addEventListener("click", async () => {
+async function runSuggestion(market) {
   toast("正在刷新建议");
-  await postJson("/api/suggestion/run", {});
+  const result = await postJson("/api/suggestion/run", {market});
   await refresh();
-});
+  if (result.status === "failed") toast(result.error || "建议生成失败");
+}
 
 refresh()
   .then(() => pollReportStatus({notify: false, refreshOnCompleted: false}))

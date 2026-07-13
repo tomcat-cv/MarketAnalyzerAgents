@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import call, patch
 from zoneinfo import ZoneInfo
 
@@ -71,7 +72,7 @@ class ServiceCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write_project(root)
-            args = argparse.Namespace(slot="08:00", backend="dry-run")
+            args = argparse.Namespace(slot="08:00", backend="dry-run", market="us_equities")
             with patch("marketanalyzeragents.cli.find_project_root", return_value=root), patch(
                 "marketanalyzeragents.analysis_system._collect_official",
                 return_value=([], []),
@@ -81,17 +82,18 @@ class ServiceCommandTests(unittest.TestCase):
             ), contextlib.redirect_stdout(io.StringIO()):
                 exit_code = command_report(args)
 
-            reports = list((root / "state" / "analysis" / "reports").glob("*.json"))
+            reports = list((root / "state" / "analysis" / "reports" / "us_equities").glob("*.json"))
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(len(reports), 1)
 
     def test_suggest_command_uses_core_suggestion_generator(self) -> None:
-        args = argparse.Namespace(backend="dry-run")
+        args = argparse.Namespace(backend="dry-run", market="us_equities")
         with patch("marketanalyzeragents.cli.find_project_root", return_value=Path("/tmp/project")), patch(
             "marketanalyzeragents.cli.generate_intraday_suggestion",
             return_value={
                 "id": "suggestion-1",
+                "status": "completed",
                 "title": "盘中操作建议",
                 "generated_at": "2026-07-08T10:00:00+08:00",
                 "quote_count": 0,
@@ -100,7 +102,7 @@ class ServiceCommandTests(unittest.TestCase):
             exit_code = command_suggest(args)
 
         self.assertEqual(exit_code, 0)
-        generate.assert_called_once_with(Path("/tmp/project"), backend="dry-run")
+        generate.assert_called_once_with(Path("/tmp/project"), "us_equities", backend="dry-run")
 
     def test_open_market_suggestion_interval_uses_active_market_settings(self) -> None:
         interval = _open_market_suggestion_interval(
@@ -121,17 +123,19 @@ class ServiceCommandTests(unittest.TestCase):
             root = Path(tmp)
             self._write_project(root)
 
-            with patch("marketanalyzeragents.analysis_system.fetch_market_data", side_effect=ValueError("No usable market data returned for NVDA")), patch(
+            with patch("marketanalyzeragents.analysis_system.market_status", return_value=SimpleNamespace(state="open", session_close_beijing=None)), patch("marketanalyzeragents.analysis_system.fetch_market_data", side_effect=ValueError("No usable market data returned for NVDA")), patch(
                 "marketanalyzeragents.analysis_system.collect_content",
                 return_value=ContentPack(official=[], social_posts=[], source_warnings=[]),
             ), patch(
                 "marketanalyzeragents.analysis_system.current_market_sentiment",
                 return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
             ):
-                result = generate_intraday_suggestion(root, backend="dry-run")
+                result = generate_intraday_suggestion(root, "us_equities", backend="dry-run")
 
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["failed_stage"], "safety_gate")
         self.assertEqual(result["quote_count"], 0)
-        self.assertIn("No usable market data returned for NVDA", "\n".join(result["warnings"]))
+        self.assertIn("No usable market data returned for NVDA", result["error"])
 
     def test_service_loop_records_task_error_and_keeps_loop_alive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,7 +157,7 @@ class ServiceCommandTests(unittest.TestCase):
 
             status = json.loads((root / "state" / "service_status.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(status["last_error"]["task"], "scheduled_report")
+        self.assertEqual(status["last_error"]["task"], "scheduled_report:us_equities")
         self.assertEqual(status["last_error"]["message"], "report boom")
 
 

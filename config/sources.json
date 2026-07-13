@@ -67,7 +67,7 @@
     "xiaohongshu": {
       "accounts": [],
       "adapter": "disabled",
-      "enabled": true,
+      "enabled": false,
       "keywords": [
         "NVDA",
         "NVIDIA",

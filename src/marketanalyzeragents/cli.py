@@ -13,17 +13,17 @@ from .web import run_web_server
 def command_report(args: argparse.Namespace) -> int:
     root = find_project_root()
     load_dotenv(root / ".env")
-    result = generate_market_report(root, slot=args.slot, backend=args.backend)
-    print(json.dumps({key: result[key] for key in ("id", "title", "generated_at", "html_path")}, ensure_ascii=False, indent=2))
-    return 0
+    result = generate_market_report(root, args.market, slot=args.slot, backend=args.backend)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") in {"completed", "completed_with_warnings"} else 1
 
 
 def command_suggest(args: argparse.Namespace) -> int:
     root = find_project_root()
     load_dotenv(root / ".env")
-    result = generate_intraday_suggestion(root, backend=args.backend)
-    print(json.dumps({key: result[key] for key in ("id", "title", "generated_at", "quote_count")}, ensure_ascii=False, indent=2))
-    return 0
+    result = generate_intraday_suggestion(root, args.market, backend=args.backend)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") in {"completed", "completed_with_warnings"} else 1
 
 
 def command_web(args: argparse.Namespace) -> int:
@@ -55,10 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser = subparsers.add_parser("report", help="Collect configured sources and generate a market analysis report.")
     report_parser.add_argument("--slot", help="Report slot label, for example 08:00.")
     report_parser.add_argument("--backend", choices=["zhipu", "openai", "dry-run"], help="Override analysis backend.")
+    report_parser.add_argument("--market", choices=["a_share", "us_equities"], required=True)
     report_parser.set_defaults(func=command_report)
 
     suggest_parser = subparsers.add_parser("suggest", help="Generate an intraday operation suggestion.")
     suggest_parser.add_argument("--backend", choices=["zhipu", "openai", "dry-run"], help="Override suggestion backend.")
+    suggest_parser.add_argument("--market", choices=["a_share", "us_equities"], required=True)
     suggest_parser.set_defaults(func=command_suggest)
 
     service_parser = subparsers.add_parser("service", help="Run scheduled reports and intraday suggestion polling.")

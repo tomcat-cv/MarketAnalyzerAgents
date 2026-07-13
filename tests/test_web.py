@@ -2,6 +2,7 @@ import json
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,6 +13,8 @@ from marketanalyzeragents.analysis_system import (
     delete_holding,
     delete_topic,
     generate_market_report,
+    _filter_social_posts_for_beijing_day,
+    update_portfolio_configuration,
     update_model_configuration,
     update_source_configuration,
     upsert_holding,
@@ -115,6 +118,49 @@ class WebCoreTests(unittest.TestCase):
         holdings = sources["portfolios"]["us_equities"]["holdings"]
         self.assertEqual([holding["ticker"] for holding in holdings], ["MRVL"])
 
+    def test_holding_and_market_nav_are_preserved_by_market(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            with patch("marketanalyzeragents.analysis_system.lookup_stock_profile", return_value=VERIFIED_MRVL):
+                upsert_holding(root, {"market": "us_equities", "ticker": "MRVL", "quantity": "12", "cost_basis": "68.5"})
+            update_portfolio_configuration(root, {"market": "us_equities", "portfolio_nav": "250000", "currency": "USD"})
+            with patch("marketanalyzeragents.analysis_system.current_market_sentiment", return_value=({"status": "ok"}, [])):
+                state = dashboard_state(root)
+
+        holding = next(item for item in state["market_views"]["us_equities"]["holdings"] if item["ticker"] == "MRVL")
+        self.assertEqual(holding["quantity"], 12.0)
+        self.assertEqual(holding["cost_basis"], 68.5)
+        self.assertEqual(state["market_views"]["us_equities"]["portfolio_nav"], 250000.0)
+        self.assertEqual(state["market_views"]["a_share"]["holdings"], [])
+
+    def test_social_posts_are_filtered_to_current_beijing_day(self) -> None:
+        run_at = datetime.fromisoformat("2026-07-13T10:00:00+08:00")
+        posts = [
+            SocialPost("x", "today", "2026-07-12T16:30:00+00:00", "u1", "today"),
+            SocialPost("x", "yesterday", "2026-07-12T15:59:59+00:00", "u2", "old"),
+        ]
+        filtered, warnings = _filter_social_posts_for_beijing_day(posts, run_at)
+
+        self.assertEqual([post.author for post in filtered], ["today"])
+        self.assertEqual(warnings, [])
+
+    def test_model_failure_degrades_each_section_and_keeps_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_project(root)
+            with patch("marketanalyzeragents.analysis_system.collect_content", return_value=ContentPack([], [], [])), patch(
+                "marketanalyzeragents.analysis_system.collect_market_overview", return_value=({"indices": [], "holdings": []}, [])
+            ), patch("marketanalyzeragents.analysis_system.current_market_sentiment", return_value=({"status": "ok"}, [])), patch(
+                "marketanalyzeragents.analysis_system._call_model", side_effect=RuntimeError("provider unavailable")
+            ):
+                result = generate_market_report(root, "us_equities", backend="zhipu")
+
+        self.assertEqual(result["status"], "completed_with_warnings")
+        self.assertIn("markdown", result)
+        self.assertTrue(any(node["node"] == "model" for node in result["generation_nodes"]))
+        self.assertIn("运行失败，已降级", result["markdown"])
+
     def test_topic_and_source_configuration_update_sources_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -139,7 +185,10 @@ class WebCoreTests(unittest.TestCase):
 
             sources = json.loads((root / "config" / "sources.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(sources["focus_topics"], [{"id": "energy", "name": "能源", "keywords": ["power", "utility"]}])
+        self.assertEqual(sources["focus_topics"][0]["name_zh"], "能源")
+        self.assertEqual(sources["focus_topics"][0]["name_en"], "power")
+        self.assertEqual(sources["focus_topics"][0]["bilingual_status"], "complete")
+        self.assertIn("utility", sources["focus_topics"][0]["keywords"])
         self.assertEqual(sources["official_sources"][0]["name"], "Fed")
         self.assertEqual(sources["social_sources"]["x"]["accounts"], ["macro_analyst"])
         self.assertEqual(sources["social_sources"]["x"]["keyword_max_results"], 12)
@@ -190,7 +239,7 @@ class WebCoreTests(unittest.TestCase):
                 "marketanalyzeragents.analysis_system.current_market_sentiment",
                 return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
             ):
-                report = generate_market_report(root, slot="08:00", backend="dry-run")
+                report = generate_market_report(root, "us_equities", slot="08:00", backend="dry-run")
                 html_exists = Path(report["html_path"]).exists()
                 state = dashboard_state(root)
 
@@ -225,7 +274,7 @@ class WebCoreTests(unittest.TestCase):
                 "marketanalyzeragents.analysis_system.current_market_sentiment",
                 return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
             ), patch("marketanalyzeragents.analysis_system.fetch_market_data", side_effect=fake_fetch):
-                report = generate_market_report(root, slot="08:00", backend="dry-run")
+                report = generate_market_report(root, "us_equities", slot="08:00", backend="dry-run")
 
         index_symbols = [item["symbol"] for item in report["market_overview"]["indices"]]
         self.assertIn("^GSPC", index_symbols)
@@ -267,7 +316,7 @@ class WebCoreTests(unittest.TestCase):
                 "marketanalyzeragents.analysis_system.current_market_sentiment",
                 return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
             ):
-                report = generate_market_report(root, slot="08:00", backend="dry-run")
+                report = generate_market_report(root, "us_equities", slot="08:00", backend="dry-run")
 
         self.assertIn("### 配置博主观点", report["markdown"])
         self.assertIn("analyst", report["markdown"])
@@ -311,7 +360,7 @@ class WebCoreTests(unittest.TestCase):
                 "marketanalyzeragents.analysis_system.current_market_sentiment",
                 return_value=({"value": "61", "label": "Greed", "status": "ok", "components": []}, []),
             ), patch("marketanalyzeragents.analysis_system._call_model", return_value="") as call_model:
-                generate_market_report(root, slot="08:00", backend="zhipu")
+                generate_market_report(root, "us_equities", slot="08:00", backend="zhipu")
 
         self.assertEqual(call_model.call_count, 4)
 
@@ -331,7 +380,7 @@ class WebCoreTests(unittest.TestCase):
                     "social_count": 1,
                 },
             ):
-                started = runner.start(root, backend="dry-run")
+                started = runner.start(root, "us_equities", backend="dry-run")
                 for _ in range(50):
                     status = runner.snapshot()
                     if status["state"] == "completed":

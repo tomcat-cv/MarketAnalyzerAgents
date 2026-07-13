@@ -93,6 +93,8 @@
       gap: 18px;
       align-items: start;
     }
+    .market-block { margin: 24px 0; padding-top: 8px; border-top: 3px solid var(--line); }
+    .market-block > .section-head h2 { font-size: 24px; }
     .config-grid { grid-template-columns: minmax(360px, .95fr) minmax(420px, 1.05fr); }
     .config-stack { max-width: 1440px; margin: 0 auto; }
     section {

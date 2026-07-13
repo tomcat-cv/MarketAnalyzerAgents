@@ -18,6 +18,7 @@ from .analysis_system import (
     generate_intraday_suggestion,
     generate_market_report,
     service_loop,
+    update_portfolio_configuration,
     update_model_configuration,
     update_source_configuration,
     upsert_holding,
@@ -45,7 +46,9 @@ class ReportRunState:
                 status["elapsed_seconds"] = max(0, int(time.monotonic() - self._started_monotonic))
             return status
 
-    def start(self, root: Path, backend: str | None = None) -> dict[str, Any]:
+    def start(self, root: Path, market: str, backend: str | None = None) -> dict[str, Any]:
+        if market not in {"a_share", "us_equities"}:
+            raise ValueError("market must be a_share or us_equities")
         with self._lock:
             if self._status.get("state") == "running":
                 return self.snapshot()
@@ -56,19 +59,22 @@ class ReportRunState:
                 "started_at": started_at,
                 "message": "正在收集资讯、行情和市场情绪",
                 "elapsed_seconds": 0,
+                "market": market,
             }
             self._started_monotonic = time.monotonic()
         threading.Thread(
             target=self._run,
-            kwargs={"root": root, "backend": backend},
+            kwargs={"root": root, "market": market, "backend": backend},
             daemon=True,
             name="market-analyzer-manual-report",
         ).start()
         return self.snapshot()
 
-    def _run(self, root: Path, backend: str | None) -> None:
+    def _run(self, root: Path, market: str, backend: str | None) -> None:
         try:
-            report = generate_market_report(root, backend=backend)
+            report = generate_market_report(root, market, backend=backend)
+            if report.get("status") == "failed":
+                raise RuntimeError(f"{report.get('failed_stage')}: {report.get('error')}")
         except Exception as exc:
             settings = load_settings(root)
             with self._lock:
@@ -77,6 +83,7 @@ class ReportRunState:
                     "started_at": self._status.get("started_at"),
                     "completed_at": beijing_now(settings).isoformat(timespec="seconds"),
                     "elapsed_seconds": self._elapsed_seconds(),
+                    "market": market,
                     "error": str(exc),
                 }
                 self._started_monotonic = None
@@ -88,12 +95,17 @@ class ReportRunState:
                 "started_at": self._status.get("started_at"),
                 "completed_at": beijing_now(settings).isoformat(timespec="seconds"),
                 "elapsed_seconds": self._elapsed_seconds(),
+                "market": market,
                 "result": {
                     "id": report.get("id"),
                     "title": report.get("title"),
                     "generated_at": report.get("generated_at"),
                     "official_count": report.get("official_count"),
                     "social_count": report.get("social_count"),
+                    "status": report.get("status"),
+                    "generation_nodes": report.get("generation_nodes", []),
+                    "warnings": report.get("warnings", []),
+                    "configuration_issues": report.get("configuration_issues", []),
                 },
             }
             self._started_monotonic = None
@@ -198,14 +210,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(lookup_stock_profile(client, str(payload.get("market", "")), str(payload.get("ticker", ""))))
             elif self.path == "/api/holdings/delete":
                 self._send_json(delete_holding(self.root, payload))
+            elif self.path == "/api/portfolio-config":
+                self._send_json(update_portfolio_configuration(self.root, payload))
             elif self.path == "/api/topics":
                 self._send_json(upsert_topic(self.root, payload))
             elif self.path == "/api/topics/delete":
                 self._send_json(delete_topic(self.root, payload))
             elif self.path == "/api/report/run":
-                self._send_json(REPORT_RUN_STATE.start(self.root, backend=payload.get("backend")), HTTPStatus.ACCEPTED)
+                self._send_json(REPORT_RUN_STATE.start(self.root, str(payload.get("market", "")), backend=payload.get("backend")), HTTPStatus.ACCEPTED)
             elif self.path == "/api/suggestion/run":
-                self._send_json(generate_intraday_suggestion(self.root, backend=payload.get("backend")))
+                self._send_json(generate_intraday_suggestion(self.root, str(payload.get("market", "")), backend=payload.get("backend")))
             else:
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:

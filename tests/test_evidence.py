@@ -63,7 +63,7 @@ class EvidenceContractTests(unittest.TestCase):
         )
 
         self.assertEqual(posts, [])
-        self.assertTrue(warnings)
+        self.assertEqual(warnings, [])
 
     def test_x_api_adapter_requires_twitterapi_io_key(self) -> None:
         with patch.dict("os.environ", {}, clear=True):

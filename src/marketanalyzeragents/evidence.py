@@ -38,7 +38,12 @@ def configured_us_holdings(sources: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "ticker": ticker,
                 "symbol": str(entry.get("symbol", ticker)).strip() or ticker,
                 "company": str(entry.get("company", ticker)).strip() or ticker,
+                "company_name_zh": str(entry.get("company_name_zh", "")).strip(),
+                "company_name_en": str(entry.get("company_name_en", "")).strip(),
                 "themes": [str(value) for value in entry.get("themes", [])],
+                "quantity": float(entry["quantity"]) if entry.get("quantity") not in (None, "") else None,
+                "cost_basis": float(entry["cost_basis"]) if entry.get("cost_basis") not in (None, "") else None,
+                "currency": str(entry.get("currency", "USD")).strip() or "USD",
             }
         )
     return holdings
@@ -62,7 +67,12 @@ def configured_a_share_holdings(sources: Mapping[str, Any]) -> list[dict[str, An
                 "ticker": ticker,
                 "symbol": str(entry.get("symbol", ticker)).strip() or ticker,
                 "company": str(entry.get("company", ticker)).strip() or ticker,
+                "company_name_zh": str(entry.get("company_name_zh", "")).strip(),
+                "company_name_en": str(entry.get("company_name_en", "")).strip(),
                 "themes": [str(value) for value in entry.get("themes", [])],
+                "quantity": float(entry["quantity"]) if entry.get("quantity") not in (None, "") else None,
+                "cost_basis": float(entry["cost_basis"]) if entry.get("cost_basis") not in (None, "") else None,
+                "currency": str(entry.get("currency", "CNY")).strip() or "CNY",
             }
         )
     return holdings

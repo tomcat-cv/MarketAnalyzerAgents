@@ -7,18 +7,19 @@ import sys
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from .collectors import collect_rss_items
-from .collectors_core import HttpClient, resolve_research_window
+from .collectors_core import HttpClient, parse_datetime, resolve_research_window
 from .config import load_json, load_settings, resolve_path
+from .config_store import save_document
 from .evidence import EvidenceItem, configured_portfolio_holdings, dedupe_evidence
 from .intraday import MarketDataProviderError, fetch_market_data
 from .market_calendar import calendar_from_settings, market_status
-from .market_sentiment import collect_market_sentiment
+from .market_sentiment import collect_market_sentiment, sentiment_label
 from .openai_runner import run_openai
 from .portfolio_snapshots import normalize_holding
 from .social_adapters import SocialPost, collect_social_posts
@@ -30,6 +31,19 @@ from .zhipu_runner import run_zhipu
 MARKETS = ("a_share", "us_equities")
 REPORT_SCHEDULES = ("08:00", "14:00", "20:00")
 SERVICE_ERROR_LIMIT = 8
+
+
+class GenerationError(RuntimeError):
+    def __init__(self, market: str, stage: str, message: str) -> None:
+        super().__init__(message)
+        self.market = market
+        self.stage = stage
+
+
+class GenerationStageError(RuntimeError):
+    def __init__(self, stage: str, message: str) -> None:
+        super().__init__(message)
+        self.stage = stage
 
 
 @dataclass
@@ -71,11 +85,13 @@ def sources_path(root: Path, settings: Mapping[str, Any]) -> Path:
 
 
 def read_sources(root: Path, settings: Mapping[str, Any]) -> dict[str, Any]:
-    value = load_json(sources_path(root, settings), {})
+    from .config_store import load_document
+
+    value = load_document(root, "sources", sources_path(root, settings), {})
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def configured_topics(sources: Mapping[str, Any]) -> list[dict[str, Any]]:
+def configured_topics(sources: Mapping[str, Any], market: str | None = None) -> list[dict[str, Any]]:
     topics: list[dict[str, Any]] = []
     seen: set[str] = set()
     for holding in configured_portfolio_holdings(sources):
@@ -90,6 +106,8 @@ def configured_topics(sources: Mapping[str, Any]) -> list[dict[str, Any]]:
             {
                 "id": topic_id,
                 "name": str(holding.get("company") or ticker).strip(),
+                "name_zh": str(holding.get("company_name_zh", "")).strip(),
+                "name_en": str(holding.get("company_name_en", "")).strip(),
                 "keywords": keywords,
                 "source": "holding",
                 "market": str(holding.get("market", "")),
@@ -116,6 +134,8 @@ def configured_topics(sources: Mapping[str, Any]) -> list[dict[str, Any]]:
             {
                 "id": topic_id,
                 "name": str(item.get("name", topic_id)).strip() or topic_id,
+                "name_zh": str(item.get("name_zh", "")).strip(),
+                "name_en": str(item.get("name_en", "")).strip(),
                 "keywords": keywords,
                 "source": "custom",
             }
@@ -124,6 +144,8 @@ def configured_topics(sources: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def write_sources(root: Path, settings: Mapping[str, Any], sources: Mapping[str, Any]) -> Path:
+    save_document(root, "sources", sources)
+    # Keep a readable compatibility snapshot; SQLite is the runtime source of truth.
     return write_json_atomic(sources_path(root, settings), dict(sources))
 
 
@@ -165,31 +187,70 @@ def _dedupe_strings(values: list[str]) -> list[str]:
     return result
 
 
+def _has_cjk(value: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff]", value))
+
+
+def _has_latin(value: str) -> bool:
+    return bool(re.search(r"[A-Za-z]", value))
+
+
+def _complete_bilingual_topic(settings: Mapping[str, Any], value: dict[str, Any]) -> dict[str, Any]:
+    terms = _dedupe_strings(
+        [str(value.get("name", "")), str(value.get("name_zh", "")), str(value.get("name_en", "")), *_string_list(value.get("keywords", []))]
+    )
+    zh = str(value.get("name_zh", "")).strip() or next((item for item in terms if _has_cjk(item)), "")
+    en = str(value.get("name_en", "")).strip() or next((item for item in terms if _has_latin(item)), "")
+    if (not zh or not en) and str(settings.get("backend", "dry-run")) != "dry-run":
+        try:
+            raw = _call_model(
+                settings,
+                system="你是金融术语翻译器。返回严格 JSON object，只含 name_zh、name_en、keywords_zh、keywords_en；保留股票代码，不添加解释。",
+                user=json.dumps({"name": value.get("name"), "keywords": value.get("keywords", [])}, ensure_ascii=False),
+            )
+            match = re.search(r"\{.*\}", raw, re.S)
+            translated = json.loads(match.group(0) if match else raw)
+            if isinstance(translated, Mapping):
+                zh = zh or str(translated.get("name_zh", "")).strip()
+                en = en or str(translated.get("name_en", "")).strip()
+                terms.extend(_string_list(translated.get("keywords_zh", [])))
+                terms.extend(_string_list(translated.get("keywords_en", [])))
+        except Exception as exc:
+            value["bilingual_error"] = str(exc)
+    value["name_zh"] = zh
+    value["name_en"] = en
+    value["keywords"] = _dedupe_strings([*terms, zh, en])
+    value["bilingual_status"] = "complete" if zh and en else "missing_translation"
+    return value
+
+
 def _holding_keywords(holding: Mapping[str, Any]) -> list[str]:
     values = [
         str(holding.get("ticker", "")),
         str(holding.get("symbol", "")),
         str(holding.get("company", "")),
+        str(holding.get("company_name_zh", "")),
+        str(holding.get("company_name_en", "")),
         *_string_list(holding.get("themes", [])),
     ]
     return _dedupe_strings(values)
 
 
-def configured_social_keywords(sources: Mapping[str, Any]) -> list[str]:
+def configured_social_keywords(sources: Mapping[str, Any], market: str | None = None) -> list[str]:
     values: list[str] = []
     for holding in configured_portfolio_holdings(sources):
         values.extend(_holding_keywords(holding))
-    for topic in configured_topics(sources):
+    for topic in configured_topics(sources, market):
         values.append(str(topic.get("name", "")))
         values.extend(_string_list(topic.get("keywords", [])))
     values.extend(_string_list(sources.get("custom_keywords", [])))
     return _dedupe_strings(values)
 
 
-def _normalize_social_sources(payload_value: Any, existing_value: Any, sources: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def _normalize_social_sources(payload_value: Any, existing_value: Any, sources: Mapping[str, Any], market: str | None = None) -> dict[str, dict[str, Any]]:
     payload_social = payload_value if isinstance(payload_value, Mapping) else {}
     existing_social = existing_value if isinstance(existing_value, Mapping) else {}
-    keywords = configured_social_keywords(sources)
+    keywords = configured_social_keywords(sources, market)
     result: dict[str, dict[str, Any]] = {}
     for platform in ("x", "xiaohongshu"):
         incoming = payload_social.get(platform, {})
@@ -271,7 +332,7 @@ def _model_configuration(settings: Mapping[str, Any]) -> dict[str, Any]:
 
 def update_model_configuration(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
     path = root / "config" / "settings.json"
-    settings = load_json(path, {})
+    settings = dict(load_settings(root))
     if not isinstance(settings, dict):
         settings = {}
     backend = str(payload.get("backend", settings.get("backend", "zhipu"))).strip()
@@ -320,6 +381,8 @@ def update_model_configuration(root: Path, payload: Mapping[str, Any]) -> dict[s
         if interval < 60:
             raise ValueError("intraday_suggestion_interval_seconds must be at least 60")
         settings["intraday_suggestion_interval_seconds"] = interval
+    save_document(root, "settings", settings)
+    # Keep JSON inspectable and usable as a migration/export snapshot.
     write_json_atomic(path, settings)
     return _model_configuration(load_settings(root))
 
@@ -340,7 +403,10 @@ def upsert_holding(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
         retry_backoff_seconds=float(collectors.get("retry_backoff_seconds", 1.0)),
     )
     profile = lookup_stock_profile(client, market, str(payload.get("ticker", "")))
-    value = normalize_holding(market, {**profile, **{key: payload[key] for key in ("quantity", "cost_basis") if key in payload}})
+    value = normalize_holding(
+        market,
+        {**profile, **{key: payload[key] for key in ("quantity", "cost_basis", "currency") if key in payload}},
+    )
     holdings = sources.setdefault("portfolios", {}).setdefault(market, {}).setdefault("holdings", [])
     if not isinstance(holdings, list):
         raise ValueError("holdings must be a list")
@@ -352,6 +418,31 @@ def upsert_holding(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
         holdings.append(value)
     write_sources(root, settings, sources)
     return value
+
+
+def update_portfolio_configuration(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = load_settings(root)
+    sources = read_sources(root, settings)
+    market = str(payload.get("market", "")).strip()
+    if market not in MARKETS:
+        raise ValueError("market must be a_share or us_equities")
+    raw_nav = payload.get("portfolio_nav")
+    if raw_nav in (None, ""):
+        nav = None
+    else:
+        nav = float(raw_nav)
+        if nav <= 0:
+            raise ValueError("portfolio_nav must be positive")
+    portfolio = sources.setdefault("portfolios", {}).setdefault(market, {})
+    if not isinstance(portfolio, dict):
+        raise ValueError("portfolio configuration must be an object")
+    if nav is None:
+        portfolio.pop("portfolio_nav", None)
+    else:
+        portfolio["portfolio_nav"] = nav
+    portfolio["currency"] = str(payload.get("currency") or ("USD" if market == "us_equities" else "CNY")).strip()
+    write_sources(root, settings, sources)
+    return {"market": market, "portfolio_nav": nav, "currency": portfolio["currency"]}
 
 
 def delete_holding(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -379,8 +470,11 @@ def upsert_topic(root: Path, payload: Mapping[str, Any]) -> dict[str, Any]:
     value = {
         "id": topic_id,
         "name": str(payload.get("name", topic_id)).strip() or topic_id,
+        "name_zh": str(payload.get("name_zh", "")).strip(),
+        "name_en": str(payload.get("name_en", "")).strip(),
         "keywords": _string_list(payload.get("keywords", [])),
     }
+    value = _complete_bilingual_topic(settings, value)
     topics = sources.setdefault("focus_topics", [])
     if not isinstance(topics, list):
         raise ValueError("focus_topics must be a list")
@@ -492,9 +586,51 @@ def _collector_client(settings: Mapping[str, Any]) -> HttpClient:
     )
 
 
-def current_market_sentiment(settings: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def current_market_sentiment(settings: Mapping[str, Any], market: str = "us_equities") -> tuple[dict[str, Any], list[str]]:
+    if market == "a_share":
+        rows: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        indices = settings.get("market_overview", {}).get("indices", {}).get("a_share", [])
+        market_data_settings = settings.get("market_data", {})
+        client = _collector_client(settings)
+        for item in indices if isinstance(indices, list) else []:
+            if not isinstance(item, Mapping) or not str(item.get("symbol", "")).strip():
+                continue
+            symbol = str(item["symbol"]).strip()
+            try:
+                data = fetch_market_data(client, "a_share", symbol, market_data_settings)
+                previous = data.quote.previous_close
+                rows.append({
+                    "symbol": symbol,
+                    "name": str(item.get("name", symbol)),
+                    "daily_change_pct": ((data.quote.price / previous) - 1) * 100 if previous else None,
+                    "period_change_pct": data.metrics.get("period_change_pct"),
+                    "volatility_pct": data.metrics.get("annualized_volatility_pct"),
+                    "observed_at": data.quote.observed_at,
+                })
+            except Exception as exc:
+                warnings.append(f"a_share_sentiment:{symbol}: {exc}")
+        usable = [row for row in rows if row["daily_change_pct"] is not None]
+        if not usable:
+            return {
+                "market": market, "status": "unavailable", "value": "", "label": "暂不可用",
+                "summary": "A 股指数行情暂不可用，未使用美股指标替代。", "components": rows,
+                "generated_at": beijing_now(settings).isoformat(timespec="seconds"),
+            }, warnings or ["a_share_sentiment: 未采集到可计算的 A 股指数行情"]
+        daily = sum(float(row["daily_change_pct"]) for row in usable) / len(usable)
+        trends = [float(row["period_change_pct"]) for row in rows if row["period_change_pct"] is not None]
+        trend = sum(trends) / len(trends) if trends else 0.0
+        score = round(max(0.0, min(100.0, 50 + daily * 8 + trend * 1.5)))
+        return {
+            "market": market, "status": "partial" if warnings else "ok", "value": str(score), "score": score,
+            "label": sentiment_label(float(score)),
+            "summary": f"A 股情绪 {score}；指数平均日涨跌 {daily:.2f}%，区间趋势 {trend:.2f}%。",
+            "components": rows, "generated_at": beijing_now(settings).isoformat(timespec="seconds"),
+            "method": "A 股主要指数等权日涨跌与区间趋势的确定性合成",
+        }, warnings
     try:
         value = collect_market_sentiment(_collector_client(settings), settings.get("market_sentiment", {}))
+        value["market"] = market
         value["generated_at"] = beijing_now(settings).isoformat(timespec="seconds")
         return value, []
     except Exception as exc:
@@ -527,6 +663,7 @@ def _market_quote_row(market: str, symbol: str, name: str, data: Any) -> MarketQ
 def collect_market_overview(
     settings: Mapping[str, Any],
     sources: Mapping[str, Any],
+    target_market: str | None = None,
 ) -> tuple[dict[str, list[MarketQuoteRow]], list[str]]:
     overview_settings = settings.get("market_overview", {})
     if not isinstance(overview_settings, Mapping):
@@ -543,6 +680,8 @@ def collect_market_overview(
     if not isinstance(configured_indices, Mapping):
         configured_indices = {}
     for market in MARKETS:
+        if target_market is not None and market != target_market:
+            continue
         raw_rows = configured_indices.get(market, [])
         if not isinstance(raw_rows, list):
             continue
@@ -562,6 +701,8 @@ def collect_market_overview(
     holdings: list[MarketQuoteRow] = []
     for holding in configured_portfolio_holdings(sources):
         market = str(holding.get("market", ""))
+        if target_market is not None and market != target_market:
+            continue
         symbol = str(holding.get("symbol") or holding.get("ticker") or "").strip()
         if not market or not symbol:
             continue
@@ -575,19 +716,52 @@ def collect_market_overview(
     return {"indices": indices, "holdings": holdings}, warnings
 
 
-def collect_content(root: Path, settings: Mapping[str, Any], sources: Mapping[str, Any]) -> ContentPack:
+def _filter_social_posts_for_beijing_day(
+    posts: list[SocialPost], run_at: datetime
+) -> tuple[list[SocialPost], list[str]]:
+    beijing = ZoneInfo("Asia/Shanghai")
+    target_day = run_at.astimezone(beijing).date()
+    kept: list[SocialPost] = []
+    invalid = 0
+    stale = 0
+    for post in posts:
+        published = parse_datetime(post.published_at)
+        if published is None:
+            invalid += 1
+            continue
+        if published.astimezone(beijing).date() != target_day:
+            stale += 1
+            continue
+        kept.append(post)
+    warnings: list[str] = []
+    if invalid:
+        warnings.append(f"social freshness: {invalid} posts missing a valid published_at")
+    return kept, warnings
+
+
+def collect_content(
+    root: Path,
+    settings: Mapping[str, Any],
+    sources: Mapping[str, Any],
+    market: str | None = None,
+    run_at: datetime | None = None,
+) -> ContentPack:
     official, official_warnings = _collect_official(root, settings, sources)
     social_sources = _normalize_social_sources(
         sources.get("social_sources", {}),
         sources.get("social_sources", {}),
         sources,
+        market,
     )
     collection_sources = {**dict(sources), "social_sources": social_sources}
     social_posts, social_warnings = collect_social_posts(collection_sources, _collector_client(settings))
+    social_posts, freshness_warnings = _filter_social_posts_for_beijing_day(
+        social_posts, run_at or beijing_now(settings)
+    )
     return ContentPack(
         official=official,
         social_posts=social_posts,
-        source_warnings=official_warnings + social_warnings,
+        source_warnings=official_warnings + social_warnings + freshness_warnings,
     )
 
 
@@ -787,17 +961,64 @@ def _call_report_section(
     fallback: str,
     backend: str | None = None,
 ) -> str:
+    selected = backend or str(settings.get("backend", "zhipu"))
     try:
         markdown = _call_model(
             settings,
             system=system,
             user=json.dumps(payload, ensure_ascii=False, indent=2),
-            backend=backend,
+            backend=selected,
         )
     except Exception as exc:
-        warnings.append(f"model section {section_name}: {exc}")
+        warnings.append(f"model:{section_name}: {exc}")
         return fallback
-    return markdown or fallback
+    if selected == "dry-run":
+        return fallback
+    if not markdown:
+        warnings.append(f"model:{section_name}: model returned empty content")
+        return fallback
+    return markdown
+
+
+def _configuration_issues(settings: Mapping[str, Any], sources: Mapping[str, Any], market: str) -> list[str]:
+    issues: list[str] = []
+    holdings = [item for item in configured_portfolio_holdings(sources) if item.get("market") == market]
+    if not holdings:
+        issues.append(f"configuration:portfolio:{market}: 未配置该市场持仓")
+    if not _configured_official_sources(sources):
+        issues.append("configuration:official_sources: 未配置官方资讯源")
+    social = sources.get("social_sources", {})
+    if not isinstance(social, Mapping) or not any(
+        isinstance(item, Mapping) and item.get("enabled", True) and str(item.get("adapter", "disabled")) != "disabled"
+        for item in social.values()
+    ):
+        issues.append("configuration:social_sources: 未配置可用社媒采集器")
+    for topic in configured_topics(sources):
+        terms = [str(topic.get("name", "")), *_string_list(topic.get("keywords", []))]
+        if not any(_has_cjk(item) for item in terms) or not any(_has_latin(item) for item in terms):
+            issues.append(f"configuration:topic:{topic.get('id')}: 缺少中文或英文检索词")
+    return issues
+
+
+def _generation_nodes(warnings: list[str], configuration_issues: list[str]) -> list[dict[str, str]]:
+    nodes: dict[str, dict[str, str]] = {}
+    for message in configuration_issues:
+        parts = message.split(":", 2)
+        key = ":".join(parts[:2])
+        nodes[key] = {"node": key, "status": "missing_configuration", "message": message}
+    for message in warnings:
+        key = message.split(":", 1)[0].strip() or "collection"
+        nodes[f"runtime:{key}"] = {"node": key, "status": "degraded", "message": message}
+    return list(nodes.values())
+
+
+def _node_status_markdown(nodes: list[Mapping[str, str]]) -> str:
+    if not nodes:
+        return "## 五、生成节点状态\n- 所有必需节点正常完成。"
+    lines = ["## 五、生成节点状态"]
+    labels = {"missing_configuration": "缺少用户配置", "degraded": "运行失败，已降级"}
+    lines.extend(f"- **{labels.get(str(item.get('status')), str(item.get('status')))}** `{item.get('node')}`：{item.get('message')}" for item in nodes)
+    return "\n".join(lines)
 
 
 def _format_change(value: float | None) -> str:
@@ -809,6 +1030,56 @@ def _format_change(value: float | None) -> str:
 
 def _market_label(value: str) -> str:
     return {"a_share": "A 股", "us_equities": "美股"}.get(value, value)
+
+
+def _market_analysis_strategy(market: str) -> str:
+    if market == "a_share":
+        return (
+            "目标市场是 A 股。共享资讯都是真实外部冲击，但必须结合人民币资产、国内政策与监管、"
+            "产业链映射、A 股交易制度、午间休市、涨跌停约束和本市场持仓解释；"
+            "不得把美股行情或美股风险指标直接当作 A 股实时状态。"
+        )
+    return (
+        "目标市场是美股。共享资讯都是真实外部冲击，但必须结合美元利率、美国监管与财报、"
+        "盘前盘后时段、流动性、波动率和本市场持仓解释；"
+        "中国市场信息需要说明其对美股公司收入、供应链或风险偏好的传导路径。"
+    )
+
+
+def _portfolio_context(
+    sources: Mapping[str, Any],
+    market: str,
+    quote_rows: list[MarketQuoteRow],
+) -> dict[str, Any]:
+    portfolio = sources.get("portfolios", {}).get(market, {})
+    if not isinstance(portfolio, Mapping):
+        portfolio = {}
+    nav = float(portfolio["portfolio_nav"]) if portfolio.get("portfolio_nav") not in (None, "") else None
+    quotes = {row.symbol: row for row in quote_rows}
+    holdings: list[dict[str, Any]] = []
+    for holding in configured_portfolio_holdings(sources):
+        if holding.get("market") != market:
+            continue
+        copied = dict(holding)
+        quote = quotes.get(str(holding.get("symbol") or holding.get("ticker")))
+        quantity = holding.get("quantity")
+        cost_basis = holding.get("cost_basis")
+        market_value = float(quantity) * quote.price if quantity is not None and quote else None
+        copied.update(
+            {
+                "market_value": round(market_value, 2) if market_value is not None else None,
+                "portfolio_weight_pct": round(market_value / nav * 100, 4) if market_value is not None and nav else None,
+                "unrealized_pnl": round((quote.price - float(cost_basis)) * float(quantity), 2)
+                if quote and quantity is not None and cost_basis is not None
+                else None,
+            }
+        )
+        holdings.append(copied)
+    return {
+        "portfolio_nav": nav,
+        "currency": portfolio.get("currency") or ("USD" if market == "us_equities" else "CNY"),
+        "holdings": holdings,
+    }
 
 
 def _quote_lines(rows: list[MarketQuoteRow], limit: int = 8) -> list[str]:
@@ -942,16 +1213,25 @@ def _report_fallback(
     )
 
 
-def generate_market_report(root: Path, *, slot: str | None = None, backend: str | None = None) -> dict[str, Any]:
+def _generate_market_report(
+    root: Path,
+    market: str,
+    *,
+    slot: str | None = None,
+    backend: str | None = None,
+) -> dict[str, Any]:
+    if market not in MARKETS:
+        raise ValueError("market must be a_share or us_equities")
     settings = load_settings(root)
     sources = read_sources(root, settings)
     run_at = beijing_now(settings)
     slot_value = slot or run_at.strftime("%H:%M")
-    pack = collect_content(root, settings, sources)
-    market_overview, overview_warnings = collect_market_overview(settings, sources)
+    pack = collect_content(root, settings, sources, market, run_at)
+    market_overview, overview_warnings = collect_market_overview(settings, sources, market)
     pack.source_warnings.extend(overview_warnings)
-    market_sentiment, sentiment_warnings = current_market_sentiment(settings)
+    market_sentiment, sentiment_warnings = current_market_sentiment(settings, market)
     pack.source_warnings.extend(sentiment_warnings)
+    configuration_issues = _configuration_issues(settings, sources, market)
     configured_accounts = _configured_social_accounts(sources)
     keyword_posts, account_posts = _split_social_posts(pack.social_posts, configured_accounts)
     configured_bloggers = _configured_blogger_inputs(configured_accounts, account_posts)
@@ -960,9 +1240,10 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
         "market_sentiment": market_sentiment,
         "warnings": pack.source_warnings,
     }
+    portfolio_context = _portfolio_context(sources, market, market_overview["holdings"])
     portfolio_payload = {
-        "holdings": configured_portfolio_holdings(sources),
-        "topics": configured_topics(sources),
+        **portfolio_context,
+        "topics": configured_topics(sources, market),
         "holding_quotes": [item.__dict__ for item in market_overview["holdings"]],
         "official": [item.__dict__ for item in pack.official[:8]],
         "market_sentiment": market_sentiment,
@@ -980,7 +1261,8 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
         section_name="market_overview",
         system=(
             "你是市场概况分析师。只基于输入的指数行情和市场情绪写中文 Markdown。"
-            "必须以“## 一、市场整体概况”开头。"
+            + _market_analysis_strategy(market)
+            + "必须以“## 一、市场整体概况”开头。"
             "把市场情绪指标写在本章节中；不要写社媒、官方资讯或博主观点。"
             "内容要分层清晰，优先说明 A 股和美股分化、风险偏好和需要注意的市场状态。"
         ),
@@ -993,8 +1275,9 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
         pack.source_warnings,
         section_name="portfolio_topics",
         system=(
-            "你是持仓与主题分析师。只基于输入的持仓、关注主题、持仓行情和官方资讯上下文写中文 Markdown。"
-            "必须以“## 二、持仓与关注主题”开头。"
+            "你是持仓与主题分析师。只基于输入的持仓、共享关注主题、持仓行情和共享官方资讯上下文写中文 Markdown。"
+            + _market_analysis_strategy(market)
+            + "必须以“## 二、持仓与关注主题”开头。"
             "说明持仓和关注主题受到当前市场、资讯和主题变化的影响；不要写社媒关键词舆情或配置博主观点。"
         ),
         payload=portfolio_payload,
@@ -1006,8 +1289,9 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
         pack.source_warnings,
         section_name="official_news",
         system=(
-            "你是官方资讯编辑。只基于输入的官方资讯写中文 Markdown。"
-            "必须以“## 三、官方资讯”开头。"
+            "你是官方资讯编辑。资讯源由双市场共享；只基于输入资讯，筛选并解释其对目标市场的直接或间接传导。"
+            + _market_analysis_strategy(market)
+            + "必须以“## 三、官方资讯”开头。"
             "官方资讯必须使用可读标题链接，不输出裸 URL；没有官方资讯时直接说明当前未采集到新的官方链接。"
         ),
         payload=official_payload,
@@ -1019,8 +1303,9 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
         pack.source_warnings,
         section_name="social",
         system=(
-            "你是社媒观点分析师。只基于输入的社媒数据写中文 Markdown。"
-            "必须以“## 四、社媒观点与舆情”开头，并且必须包含两个二级小节："
+            "你是社媒观点分析师。只基于输入的共享社媒数据，并针对目标市场解释。"
+            + _market_analysis_strategy(market)
+            + "必须以“## 四、社媒观点与舆情”开头，并且必须包含两个二级小节："
             "### 关键词舆情概览 和 ### 配置博主观点。"
             "关键词舆情概览只总结 keyword_posts 与 keyword_summary。"
             "配置博主观点必须按 configured_bloggers 中的每个配置账号逐个输出分析结果；即使某个账号没有返回帖子，也要说明本次未采集到可分析的新帖。"
@@ -1032,22 +1317,25 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
     )
     markdown = "\n\n".join(
         [
-            f"# 市场分析报告 {run_at.strftime('%Y-%m-%d %H:%M')}",
+            f"# {_market_label(market)}市场分析报告 {run_at.strftime('%Y-%m-%d %H:%M')}",
             market_section.strip(),
             portfolio_section.strip(),
             official_section.strip(),
             social_section.strip(),
+            _node_status_markdown(_generation_nodes(pack.source_warnings, configuration_issues)),
         ]
     )
     markdown = _ensure_configured_blogger_section(markdown, configured_bloggers)
-    report_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{slot_value.replace(':', '')}"
-    json_path = analysis_dir(root, settings, "reports") / f"{report_id}.json"
-    html_path = analysis_dir(root, settings, "reports") / f"{report_id}.html"
+    report_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{market}-{slot_value.replace(':', '')}"
+    json_path = analysis_dir(root, settings, "reports") / market / f"{report_id}.json"
+    html_path = analysis_dir(root, settings, "reports") / market / f"{report_id}.html"
     result = {
         "id": report_id,
+        "market": market,
+        "status": "completed_with_warnings" if pack.source_warnings or configuration_issues else "completed",
         "slot": slot_value,
         "generated_at": run_at.isoformat(timespec="seconds"),
-        "title": f"{run_at.strftime('%Y-%m-%d')} {slot_value} 市场分析报告",
+        "title": f"{run_at.strftime('%Y-%m-%d')} {slot_value} {_market_label(market)}市场分析报告",
         "markdown": markdown,
         "html_path": str(html_path),
         "official_count": len(pack.official),
@@ -1057,21 +1345,95 @@ def generate_market_report(root: Path, *, slot: str | None = None, backend: str 
             "holdings": [item.__dict__ for item in market_overview["holdings"]],
         },
         "warnings": pack.source_warnings,
+        "configuration_issues": configuration_issues,
+        "generation_nodes": _generation_nodes(pack.source_warnings, configuration_issues),
     }
     write_json(json_path, result)
     write_text(html_path, markdown_to_html(markdown, result["title"]))
     return result
 
 
-def generate_intraday_suggestion(root: Path, *, backend: str | None = None) -> dict[str, Any]:
+def generate_market_report(
+    root: Path,
+    market: str,
+    *,
+    slot: str | None = None,
+    backend: str | None = None,
+) -> dict[str, Any]:
+    settings = load_settings(root)
+    run_at = beijing_now(settings)
+    slot_value = slot or run_at.strftime("%H:%M")
+    try:
+        return _generate_market_report(root, market, slot=slot, backend=backend)
+    except Exception as exc:
+        stage = exc.stage if isinstance(exc, (GenerationError, GenerationStageError)) else "generation"
+        report_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{market}-{slot_value.replace(':', '')}-failed"
+        result = {
+            "id": report_id,
+            "market": market,
+            "status": "failed",
+            "slot": slot_value,
+            "generated_at": run_at.isoformat(timespec="seconds"),
+            "title": f"{run_at.strftime('%Y-%m-%d')} {slot_value} {_market_label(market)}报告生成失败",
+            "failed_stage": stage,
+            "error": str(exc),
+            "official_count": 0,
+            "social_count": 0,
+            "warnings": [],
+        }
+        path = analysis_dir(root, settings, "reports") / market / f"{report_id}.json"
+        write_json(path, result)
+        return result
+
+
+def generate_intraday_suggestion(
+    root: Path,
+    market: str,
+    *,
+    backend: str | None = None,
+) -> dict[str, Any]:
+    if market not in MARKETS:
+        raise ValueError("market must be a_share or us_equities")
     settings = load_settings(root)
     sources = read_sources(root, settings)
     run_at = beijing_now(settings)
+    market_settings = settings.get("markets", {}).get(market, {})
+    if not isinstance(market_settings, Mapping):
+        market_settings = {}
+    status = market_status(
+        market,
+        now=run_at,
+        holidays=market_settings.get("holidays", []),
+        extra_open_dates=market_settings.get("extra_open_dates", []),
+        early_closes=market_settings.get("early_closes", {}),
+        calendar=calendar_from_settings(market_settings, root=root),
+    )
+    safety_checks: list[dict[str, Any]] = [{
+        "check": "market_open", "passed": status.state == "open", "value": status.state,
+        "message": "仅在目标市场常规交易时段生成盘中操作建议",
+    }]
     intraday_settings = settings.get("intraday_agents", {})
     if not isinstance(intraday_settings, Mapping):
         intraday_settings = {}
     debate_rounds = int(intraday_settings.get("debate_rounds", 1))
-    holdings = configured_portfolio_holdings(sources)
+    holdings = [item for item in configured_portfolio_holdings(sources) if item.get("market") == market]
+    safety_checks.append({
+        "check": "portfolio_configured", "passed": bool(holdings), "value": len(holdings),
+        "message": "盘中建议必须至少有一项该市场持仓",
+    })
+    blocking = [item for item in safety_checks if not item["passed"]]
+    if blocking:
+        suggestion_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{market}-blocked"
+        result = {
+            "id": suggestion_id, "market": market, "status": "blocked",
+            "generated_at": run_at.isoformat(timespec="seconds"),
+            "title": f"{run_at.strftime('%Y-%m-%d %H:%M')} {_market_label(market)}盘中建议已阻止",
+            "failed_stage": "safety_gate", "error": "; ".join(str(item["message"]) for item in blocking),
+            "safety_checks": safety_checks,
+            "quote_count": 0,
+        }
+        write_json(analysis_dir(root, settings, "suggestions") / market / f"{suggestion_id}.json", result)
+        return result
     quote_rows: list[dict[str, Any]] = []
     quote_errors: list[str] = []
     collector_settings = settings.get("collectors", {})
@@ -1084,94 +1446,184 @@ def generate_intraday_suggestion(root: Path, *, backend: str | None = None) -> d
         float(collector_settings.get("retry_backoff_seconds", 1.0)),
     )
     for holding in holdings:
-        market = str(holding.get("market", ""))
+        holding_market = str(holding.get("market", ""))
         symbol = str(holding.get("symbol") or holding.get("ticker") or "").strip()
         try:
-            data = fetch_market_data(client, market, symbol, settings.get("market_data", {}))
-        except (MarketDataProviderError, ValueError) as exc:
-            quote_errors.append(f"{market} {symbol}: {exc}")
+            data = fetch_market_data(client, holding_market, symbol, settings.get("market_data", {}))
+        except Exception as exc:
+            quote_errors.append(f"{holding_market} {symbol}: {exc}")
+            continue
+        observed = parse_datetime(data.quote.observed_at)
+        max_age = int(settings.get("intraday_quote_max_age_seconds", 900))
+        age_seconds = (run_at.astimezone(timezone.utc) - observed).total_seconds() if observed else None
+        if age_seconds is None or age_seconds < -60 or age_seconds > max_age:
+            quote_errors.append(f"{holding_market} {symbol}: 行情时间无效或已超过 {max_age} 秒")
             continue
         quote_rows.append(
             {
-                "market": market,
+                "market": holding_market,
                 "symbol": symbol,
                 "price": data.quote.price,
                 "previous_close": data.quote.previous_close,
                 "observed_at": data.quote.observed_at,
+                "age_seconds": round(age_seconds),
                 "metrics": data.metrics,
             }
         )
-    pack = collect_content(root, settings, sources)
-    market_sentiment, sentiment_warnings = current_market_sentiment(settings)
+    pack = collect_content(root, settings, sources, market, run_at)
+    market_sentiment, sentiment_warnings = current_market_sentiment(settings, market)
     pack.source_warnings.extend(sentiment_warnings)
+    safety_checks.append({
+        "check": "fresh_quotes_available", "passed": bool(quote_rows), "value": len(quote_rows),
+        "message": "至少一项持仓必须具有满足新鲜度阈值的行情",
+    })
+    if not quote_rows:
+        suggestion_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{market}-blocked"
+        result = {
+            "id": suggestion_id,
+            "market": market,
+            "status": "blocked",
+            "generated_at": run_at.isoformat(timespec="seconds"),
+            "title": f"{run_at.strftime('%Y-%m-%d %H:%M')} {_market_label(market)}盘中建议已阻止",
+            "failed_stage": "safety_gate",
+            "error": "; ".join(quote_errors),
+            "quote_count": len(quote_rows),
+            "safety_checks": safety_checks,
+        }
+        write_json(analysis_dir(root, settings, "suggestions") / market / f"{suggestion_id}.json", result)
+        return result
+    portfolio = sources.get("portfolios", {}).get(market, {})
+    if not isinstance(portfolio, Mapping):
+        portfolio = {}
+    nav = float(portfolio["portfolio_nav"]) if portfolio.get("portfolio_nav") not in (None, "") else None
+    enriched_holdings = []
+    quotes_by_symbol = {str(item["symbol"]): item for item in quote_rows}
+    for holding in holdings:
+        copied = dict(holding)
+        quote = quotes_by_symbol.get(str(holding.get("symbol") or holding.get("ticker")))
+        quantity = holding.get("quantity")
+        cost_basis = holding.get("cost_basis")
+        market_value = float(quantity) * float(quote["price"]) if quantity is not None and quote else None
+        copied.update({
+            "market_value": round(market_value, 2) if market_value is not None else None,
+            "portfolio_weight_pct": round(market_value / nav * 100, 4) if market_value is not None and nav else None,
+            "unrealized_pnl": round((float(quote["price"]) - float(cost_basis)) * float(quantity), 2)
+            if quote and quantity is not None and cost_basis is not None else None,
+        })
+        enriched_holdings.append(copied)
     payload = {
-        "holdings": holdings,
+        "holdings": enriched_holdings,
+        "portfolio_nav": nav,
+        "portfolio_currency": portfolio.get("currency"),
         "quotes": quote_rows,
         "quote_errors": quote_errors,
+        "collection_warnings": pack.source_warnings,
         "official": [item.__dict__ for item in pack.official[:12]],
         "social_summary": social_summary(pack.social_posts),
         "market_sentiment": market_sentiment,
         "debate_rounds": debate_rounds,
+        "market_strategy": _market_analysis_strategy(market),
+        "safety_constraints": {
+            "advice_scope": "configured holdings only",
+            "valid_until": status.session_close_beijing.isoformat(timespec="seconds") if status.session_close_beijing else None,
+            "no_quote_no_action": True,
+            "missing_sources_must_be_disclosed": True,
+            "max_action_pct_of_position": float(settings.get("intraday_max_action_pct_of_position", 20)),
+            "no_new_symbols": True,
+            "no_leverage_assumption": True,
+        },
     }
     system = (
         "你是盘中多 agent 讨论的主持人。用市场分析师、新闻分析师、多头研究员、空头研究员、"
         f"风险经理、组合经理六个职责形成 {debate_rounds} 轮简短讨论，最后给出可执行的持仓级操作建议。"
-        "不要输出无意义免责声明；建议必须有触发条件、风险点、观察位。"
+        + _market_analysis_strategy(market)
+        + "只能建议输入中的持仓；没有新鲜行情的持仓必须明确写为不操作；不得假定杠杆或新增标的；"
+        "单次建议调整比例不得超过输入 safety_constraints 的上限。建议必须写明触发条件、风险点、观察位和失效时间。"
     )
     try:
         markdown = _call_model(
             settings,
             system=system,
             user=json.dumps(payload, ensure_ascii=False, indent=2),
-            backend=backend or str(settings.get("backend", "zhipu")),
+            backend=backend or str(intraday_settings.get("advice_backend") or settings.get("backend", "zhipu")),
         )
+        selected = backend or str(intraday_settings.get("advice_backend") or settings.get("backend", "zhipu"))
+        if selected == "dry-run":
+            markdown = f"# {_market_label(market)}盘中建议 dry-run {run_at.strftime('%Y-%m-%d %H:%M')}"
+        elif not markdown:
+            raise RuntimeError("model returned empty content")
     except Exception as exc:
-        pack.source_warnings.append(f"model: {exc}")
-        markdown = (
-            f"# 盘中操作建议 {run_at.strftime('%Y-%m-%d %H:%M')}\n\n"
-            "## 组合经理结论\n"
-            "维持既有仓位纪律，优先处理价格异动和已验证新闻共同指向的标的。\n\n"
-            "## 观察位\n"
-            + "\n".join(f"- {row['symbol']}：现价 {row['price']}，前收 {row.get('previous_close')}" for row in quote_rows[:12])
-        )
-    suggestion_id = run_at.strftime("%Y%m%d-%H%M%S")
-    path = analysis_dir(root, settings, "suggestions") / f"{suggestion_id}.json"
+        suggestion_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{market}-failed"
+        result = {
+            "id": suggestion_id,
+            "market": market,
+            "status": "failed",
+            "generated_at": run_at.isoformat(timespec="seconds"),
+            "title": f"{run_at.strftime('%Y-%m-%d %H:%M')} {_market_label(market)}盘中建议生成失败",
+            "failed_stage": "model",
+            "error": str(exc),
+            "quote_count": len(quote_rows),
+        }
+        write_json(analysis_dir(root, settings, "suggestions") / market / f"{suggestion_id}.json", result)
+        return result
+    suggestion_id = f"{run_at.strftime('%Y%m%d-%H%M%S')}-{market}"
+    path = analysis_dir(root, settings, "suggestions") / market / f"{suggestion_id}.json"
     result = {
         "id": suggestion_id,
+        "market": market,
+        "status": "completed",
         "generated_at": run_at.isoformat(timespec="seconds"),
-        "title": f"{run_at.strftime('%Y-%m-%d %H:%M')} 盘中操作建议",
+        "title": f"{run_at.strftime('%Y-%m-%d %H:%M')} {_market_label(market)}盘中操作建议",
         "markdown": markdown,
         "quote_count": len(quote_rows),
-        "warnings": pack.source_warnings + quote_errors,
+        "warnings": quote_errors + pack.source_warnings,
+        "status": "completed_with_warnings" if quote_errors or pack.source_warnings else "completed",
+        "safety_checks": safety_checks,
+        "valid_until": status.session_close_beijing.isoformat(timespec="seconds") if status.session_close_beijing else None,
     }
     write_json(path, result)
     return result
 
 
-def list_reports(root: Path, settings: Mapping[str, Any], limit: int = 40) -> list[dict[str, Any]]:
+def list_reports(root: Path, settings: Mapping[str, Any], limit: int = 40, market: str | None = None) -> list[dict[str, Any]]:
     directory = analysis_dir(root, settings, "reports")
     if not directory.exists():
         return []
-    files = sorted(directory.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    patterns = [f"{market}/*.json"] if market else ["*.json", "*/*.json"]
+    files = sorted(
+        [path for pattern in patterns for path in directory.glob(pattern)],
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
     reports = []
     for path in files[:limit]:
         item = load_json(path, {})
         if isinstance(item, Mapping):
             copied = dict(item)
-            copied["url"] = "/analysis/reports/" + urllib.parse.quote(path.with_suffix(".html").name)
+            if market and copied.get("market") not in (None, market):
+                continue
+            relative = path.with_suffix(".html").relative_to(directory)
+            copied["url"] = "/analysis/reports/" + "/".join(urllib.parse.quote(part) for part in relative.parts)
             reports.append(copied)
     return reports
 
 
-def list_suggestions(root: Path, settings: Mapping[str, Any], limit: int = 20) -> list[dict[str, Any]]:
+def list_suggestions(root: Path, settings: Mapping[str, Any], limit: int = 20, market: str | None = None) -> list[dict[str, Any]]:
     directory = analysis_dir(root, settings, "suggestions")
     if not directory.exists():
         return []
-    files = sorted(directory.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    patterns = [f"{market}/*.json"] if market else ["*.json", "*/*.json"]
+    files = sorted(
+        [path for pattern in patterns for path in directory.glob(pattern)],
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
     result = []
     for path in files[:limit]:
         item = load_json(path, {})
         if isinstance(item, Mapping):
+            if market and item.get("market") not in (None, market):
+                continue
             result.append(dict(item))
     return result
 
@@ -1198,7 +1650,28 @@ def dashboard_state(root: Path) -> dict[str, Any]:
     official = _configured_official_sources(sources)
     social_sources = _normalize_social_sources(social, social, sources)
     topics = configured_topics(sources)
-    market_sentiment, sentiment_warnings = current_market_sentiment(settings)
+    market_views: dict[str, Any] = {}
+    all_sentiment_warnings: list[str] = []
+    portfolios = sources.get("portfolios", {})
+    for market in MARKETS:
+        market_reports = list_reports(root, settings, market=market)
+        market_suggestions = list_suggestions(root, settings, market=market)
+        sentiment, sentiment_warnings = current_market_sentiment(settings, market)
+        all_sentiment_warnings.extend(f"{market}: {item}" for item in sentiment_warnings)
+        portfolio = portfolios.get(market, {}) if isinstance(portfolios, Mapping) else {}
+        if not isinstance(portfolio, Mapping):
+            portfolio = {}
+        market_views[market] = {
+            "market": market,
+            "holdings": [item for item in configured_portfolio_holdings(sources) if item.get("market") == market],
+            "portfolio_nav": portfolio.get("portfolio_nav"),
+            "currency": portfolio.get("currency") or ("USD" if market == "us_equities" else "CNY"),
+            "market_sentiment": sentiment,
+            "latest_report": market_reports[0] if market_reports else None,
+            "reports": market_reports,
+            "suggestions": market_suggestions,
+            "configuration_issues": _configuration_issues(settings, sources, market),
+        }
     service_status = load_json(service_status_path(root, settings), {})
     if not isinstance(service_status, Mapping):
         service_status = {}
@@ -1214,8 +1687,11 @@ def dashboard_state(root: Path) -> dict[str, Any]:
         "social_sources": social_sources,
         "social_keywords": configured_social_keywords(sources),
         "custom_keywords": _string_list(sources.get("custom_keywords", [])),
-        "market_sentiment": market_sentiment,
-        "warnings": sentiment_warnings,
+        "market_views": market_views,
+        "market_sentiment": market_views["us_equities"]["market_sentiment"],
+        "warnings": all_sentiment_warnings,
+        "configuration_issues": _configuration_issues(settings, sources, "a_share")
+        + _configuration_issues(settings, sources, "us_equities"),
         "service_status": dict(service_status),
         "latest_report": reports[0] if reports else None,
         "reports": reports,
@@ -1243,8 +1719,8 @@ def _open_market_suggestion_interval(settings: Mapping[str, Any], market_states:
 
 
 def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = False) -> None:
-    last_report_key = ""
-    last_suggestion_key = ""
+    last_report_keys: dict[str, str] = {market: "" for market in MARKETS}
+    last_suggestion_keys: dict[str, str] = {market: "" for market in MARKETS}
     last_report_result: dict[str, Any] | None = None
     recent_errors: list[dict[str, str]] = []
 
@@ -1264,7 +1740,7 @@ def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = Fal
                 "pid": os.getpid(),
                 "last_seen_at": now.isoformat(timespec="seconds"),
                 "report_schedule": settings.get("report_schedule", REPORT_SCHEDULES),
-                "last_report_key": last_report_key,
+                "last_report_key": dict(last_report_keys),
                 "last_report_id": last_report_result.get("id") if last_report_result else "",
                 "last_error": error,
                 "recent_errors": recent_errors,
@@ -1275,10 +1751,13 @@ def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = Fal
     if run_on_start:
         settings = load_settings(root)
         now = beijing_now(settings)
-        try:
-            last_report_result = generate_market_report(root)
-        except Exception as exc:
-            record_error(settings, now, "run_on_start_report", exc)
+        for market in MARKETS:
+            try:
+                last_report_result = generate_market_report(root, market)
+                if last_report_result.get("status") == "failed":
+                    raise GenerationError(market, str(last_report_result.get("failed_stage")), str(last_report_result.get("error")))
+            except Exception as exc:
+                record_error(settings, now, f"run_on_start_report:{market}", exc)
     while True:
         settings = load_settings(root)
         now = beijing_now(settings)
@@ -1291,7 +1770,7 @@ def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = Fal
                 "pid": os.getpid(),
                 "last_seen_at": now.isoformat(timespec="seconds"),
                 "report_schedule": schedule,
-                "last_report_key": last_report_key,
+                "last_report_key": dict(last_report_keys),
                 "last_report_id": last_report_result.get("id") if last_report_result else "",
                 "last_error": recent_errors[0] if recent_errors else None,
                 "recent_errors": recent_errors,
@@ -1300,10 +1779,19 @@ def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = Fal
         )
         current_minute = now.strftime("%H:%M")
         current_day_key = now.strftime("%Y-%m-%d")
-        if current_minute in schedule and last_report_key != f"{current_day_key} {current_minute}":
+        if current_minute in schedule:
+            for market in MARKETS:
+                report_key = f"{current_day_key} {current_minute}"
+                if last_report_keys[market] == report_key:
+                    continue
+                try:
+                    last_report_result = generate_market_report(root, market, slot=current_minute)
+                    if last_report_result.get("status") == "failed":
+                        raise GenerationError(market, str(last_report_result.get("failed_stage")), str(last_report_result.get("error")))
+                    last_report_keys[market] = report_key
+                except Exception as exc:
+                    record_error(settings, now, f"scheduled_report:{market}", exc)
             try:
-                last_report_result = generate_market_report(root, slot=current_minute)
-                last_report_key = f"{current_day_key} {current_minute}"
                 settings = load_settings(root)
                 write_json_atomic(
                     service_status_path(root, settings),
@@ -1311,24 +1799,28 @@ def service_loop(root: Path, *, tick_seconds: int = 30, run_on_start: bool = Fal
                         "pid": os.getpid(),
                         "last_seen_at": beijing_now(settings).isoformat(timespec="seconds"),
                         "report_schedule": schedule,
-                        "last_report_key": last_report_key,
-                        "last_report_id": last_report_result.get("id"),
+                        "last_report_key": dict(last_report_keys),
+                        "last_report_id": last_report_result.get("id") if last_report_result else "",
                         "last_error": recent_errors[0] if recent_errors else None,
                         "recent_errors": recent_errors,
                         "tick_seconds": tick_seconds,
                     },
                 )
             except Exception as exc:
-                record_error(settings, now, "scheduled_report", exc)
+                record_error(settings, now, "scheduled_report_status", exc)
         try:
             market_states = dashboard_state(root)["markets"]
-            suggestion_interval = _open_market_suggestion_interval(settings, market_states)
-            suggestion_key = now.strftime("%Y-%m-%d %H:%M")
-            if suggestion_interval is not None and suggestion_key != last_suggestion_key:
+            for market, market_state in market_states.items():
+                suggestion_interval = _open_market_suggestion_interval(settings, {market: market_state})
+                suggestion_key = now.strftime("%Y-%m-%d %H:%M")
+                if suggestion_interval is None or suggestion_key == last_suggestion_keys[market]:
+                    continue
                 seconds_since_hour = now.minute * 60 + now.second
                 if seconds_since_hour % suggestion_interval < tick_seconds:
-                    generate_intraday_suggestion(root)
-                    last_suggestion_key = suggestion_key
+                    result = generate_intraday_suggestion(root, market)
+                    if result.get("status") == "failed":
+                        raise GenerationError(market, str(result.get("failed_stage")), str(result.get("error")))
+                    last_suggestion_keys[market] = suggestion_key
         except Exception as exc:
             record_error(settings, now, "intraday_suggestion", exc)
         time.sleep(max(1, tick_seconds))

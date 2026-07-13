@@ -6,6 +6,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
 
+from .config_store import load_document
+
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "backend": "zhipu",
@@ -25,6 +27,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "report_schedule": ["08:00", "14:00", "20:00"],
     "intraday_suggestion_interval_seconds": 1800,
+    "intraday_quote_max_age_seconds": 900,
+    "intraday_max_action_pct_of_position": 20,
     "markets": {
         "a_share": {
             "calendar": {"provider": "config", "path": "", "strict": False},
@@ -118,7 +122,7 @@ def load_json(path: Path, default: Any) -> Any:
 
 def load_settings(root: Path) -> Dict[str, Any]:
     settings_path = root / "config" / "settings.json"
-    settings = deep_merge(DEFAULT_SETTINGS, load_json(settings_path, {}))
+    settings = deep_merge(DEFAULT_SETTINGS, load_document(root, "settings", settings_path, {}))
 
     backend = os.environ.get("MARKET_ANALYZER_AGENTS_BACKEND", settings.get("backend", "zhipu"))
     settings["backend"] = backend

@@ -289,6 +289,8 @@ def collect_social_posts(sources: Mapping[str, Any], client: HttpClient | None =
         if not isinstance(config, Mapping) or not config.get("enabled", True):
             continue
         adapter_name = str(config.get("adapter", "manual" if config.get("manual_posts") else "disabled")).strip()
+        if adapter_name in {"", "disabled"}:
+            continue
         adapter = build_social_adapter(adapter_name, client)
         collected, adapter_warnings = adapter.collect(platform, config)
         posts.extend(collected)

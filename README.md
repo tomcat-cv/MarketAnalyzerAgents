@@ -6,7 +6,7 @@
 
 - 在网页中配置分析模型、持仓、关注 Topic、官方资讯来源和 X/小红书来源；市场情绪指数自动获取并展示在首页。
 - 默认按北京时间 08:00、14:00、20:00 生成市场分析报告。
-- 首页展示当天最新报告，历史归档页查看过往报告。
+- 首页上方展示美股、下方展示 A 股；两边的报告、盘中建议、持仓和市场状态独立处理。
 - 官方资讯和社媒情绪分开分析；官方资讯保留可读链接。
 - 社媒分析支持指定博主，关键词由持仓和关注 Topic 自动派生，并统计积极、消极、中性情绪。
 - 市场情绪指数由 VIX、VVIX、CBOE Equity Put/Call、FRED 高收益债利差、S&P 500 趋势、股票/美债相对表现等自动计算；缺失分项会显式标记并按可用权重重算。
@@ -25,9 +25,9 @@ cp .env.example .env
 
 ```bash
 marketanalyzeragents web --host 127.0.0.1 --port 8765
-marketanalyzeragents report --backend zhipu
-marketanalyzeragents report --backend dry-run
-marketanalyzeragents suggest --backend zhipu
+marketanalyzeragents report --market us_equities --backend zhipu
+marketanalyzeragents report --market a_share --backend dry-run
+marketanalyzeragents suggest --market us_equities --backend zhipu
 marketanalyzeragents service
 ```
 
@@ -44,8 +44,8 @@ marketanalyzeragents service
 
 ## 运行数据
 
-- `state/analysis/reports/`：市场分析报告 JSON 和 HTML。
-- `state/analysis/suggestions/`：盘中操作建议 JSON。
+- `state/analysis/reports/{market}/`：按市场隔离的分析报告 JSON 和 HTML；失败任务只保存带阶段和错误的 JSON。
+- `state/analysis/suggestions/{market}/`：按市场隔离的盘中操作建议 JSON。
 - Web 工作台默认地址：`http://127.0.0.1:8765`。
 
 ## 测试
